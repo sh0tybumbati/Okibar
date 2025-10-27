@@ -9,7 +9,9 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "http://localhost:3000",
+    origin: process.env.NODE_ENV === 'production'
+      ? true
+      : "http://localhost:3000",
     methods: ["GET", "POST"]
   }
 });
@@ -316,6 +318,12 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
+});
+
+// Serve React app for all non-API routes (must be last)
+const path = require('path');
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'build', 'index.html'));
 });
 
 server.listen(PORT, async () => {
