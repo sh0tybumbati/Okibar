@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "Karaoke bar management system with YouTube integration",
   "main": "server/index.js",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
   "scripts": {
     "start": "node server/index.js",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
