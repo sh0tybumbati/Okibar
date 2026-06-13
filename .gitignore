@@ -34,3 +34,7 @@ coverage/
 
 # Misc
 .claude/
+
+# Server-persisted venue state
+server/state.json
+.memsearch/
