@@ -1,43 +1,14 @@
 import io from 'socket.io-client';
 
-const socket = io(process.env.REACT_APP_SERVER_URL || 'http://localhost:5000');
+// In dev the CRA client runs on :3000 while the server runs on :5000 (use the
+// page's hostname so other devices on the LAN work too). In production the
+// server serves the build, so same-origin is always correct.
+const SERVER_URL =
+  process.env.REACT_APP_SERVER_URL ||
+  (window.location.port === '3000'
+    ? `http://${window.location.hostname}:5000`
+    : window.location.origin);
 
-export const socketService = {
-  // Queue events
-  onQueueUpdated: (callback) => {
-    socket.on('queueUpdated', callback);
-  },
-  
-  offQueueUpdated: (callback) => {
-    socket.off('queueUpdated', callback);
-  },
-  
-  // Table events
-  onTablesUpdated: (callback) => {
-    socket.on('tablesUpdated', callback);
-  },
-  
-  offTablesUpdated: (callback) => {
-    socket.off('tablesUpdated', callback);
-  },
-  
-  // Menu events
-  onMenuUpdated: (callback) => {
-    socket.on('menuUpdated', callback);
-  },
-  
-  offMenuUpdated: (callback) => {
-    socket.off('menuUpdated', callback);
-  },
-  
-  // Connection management
-  connect: () => {
-    socket.connect();
-  },
-  
-  disconnect: () => {
-    socket.disconnect();
-  }
-};
+const socket = io(SERVER_URL);
 
 export default socket;
