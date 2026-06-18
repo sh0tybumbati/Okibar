@@ -7,14 +7,14 @@ const PORT = process.env.PORT || 5000;
 let mainWindow = null;
 
 // Use the product name for the runtime app identity so the user-data dir is
-// ~/.config/Okibar (Electron otherwise defaults to the package.json "name").
+// ~/.config/Cantina (Electron otherwise defaults to the package.json "name").
 // Must run before any app.getPath() call.
-app.setName('Okibar');
+app.setName('Cantina');
 
 // 1. Writable data dir — a packaged app cannot write inside its install dir.
 const userDataDir = app.getPath('userData');
 fs.mkdirSync(userDataDir, { recursive: true });
-process.env.OKIBAR_STATE_FILE = path.join(userDataDir, 'state.json');
+process.env.CANTINA_STATE_FILE = path.join(userDataDir, 'state.json');
 
 // 2. Baked-in YouTube key: load the bundled .env (repo root in dev,
 //    process.resourcesPath when packaged) before the server reads it.
@@ -45,7 +45,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    title: 'Okibar',
+    title: 'Cantina',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -63,7 +63,7 @@ function loadWhenReady(attempt = 0) {
     if (attempt < 20) {
       setTimeout(() => loadWhenReady(attempt + 1), 400);
     } else {
-      dialog.showErrorBox('Okibar', 'Could not load the bar console — the server did not start.');
+      dialog.showErrorBox('Cantina', 'Could not load the bar console — the server did not start.');
     }
   });
 }
@@ -71,7 +71,7 @@ function loadWhenReady(attempt = 0) {
 app.whenReady().then(async () => {
   const free = await checkPortFree(PORT);
   if (!free) {
-    dialog.showErrorBox('Okibar', `Okibar is already running, or port ${PORT} is in use.`);
+    dialog.showErrorBox('Cantina', `Cantina is already running, or port ${PORT} is in use.`);
     app.quit();
     return;
   }

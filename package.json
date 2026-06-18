@@ -1,8 +1,8 @@
 {
-  "name": "okibar-karaoke",
+  "name": "cantina-karaoke",
   "version": "1.0.0",
   "description": "Karaoke bar management system with YouTube integration",
-  "author": "Okibar",
+  "author": "Cantina",
   "main": "electron/main.js",
   "engines": {
     "node": ">=18.0.0",
@@ -60,8 +60,8 @@
   },
   "build": {
     "extends": null,
-    "appId": "com.okibar.app",
-    "productName": "Okibar",
+    "appId": "com.cantina.app",
+    "productName": "Cantina",
     "files": [
       "build/**/*",
       "server/**/*",
@@ -76,7 +76,7 @@
     "linux": {
       "target": ["AppImage", "deb"],
       "category": "AudioVideo",
-      "maintainer": "Okibar <noreply@okibar.app>"
+      "maintainer": "Cantina <noreply@cantina.app>"
     }
   }
 }

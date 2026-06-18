@@ -1,4 +1,4 @@
-# OKibar
+# Cantina
 
 A karaoke bar management system with YouTube integration for live karaoke sessions.
 

@@ -14,13 +14,13 @@ export default class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, info) {
-    console.error('Okibar crashed:', error, info);
+    console.error('Cantina crashed:', error, info);
   }
 
   render() {
     if (!this.state.hasError) return this.props.children;
     return (
-      <div className="okibar-app flex items-center justify-center" style={{ minHeight: '100vh' }}>
+      <div className="cantina-app flex items-center justify-center" style={{ minHeight: '100vh' }}>
         <div className="panel p-8 text-center fade-up" style={{ maxWidth: '28rem' }}>
           <div className="text-5xl mb-4">🎤</div>
           <h1 className="h-display text-2xl mb-2">Something went wrong</h1>
@@ -31,8 +31,8 @@ export default class ErrorBoundary extends React.Component {
               className="btn btn-ghost"
               onClick={() => {
                 try {
-                  localStorage.removeItem('okibar-device-mode');
-                  localStorage.removeItem('okibar-device-table');
+                  localStorage.removeItem('cantina-device-mode');
+                  localStorage.removeItem('cantina-device-table');
                 } catch (_) {}
                 window.location.href = window.location.origin + '/';
               }}

@@ -50,12 +50,12 @@ const KaraokeBarApp = () => {
     const url = new URLSearchParams(window.location.search);
     const urlMode = url.get('mode');
     if (DEVICE_ROLES.includes(urlMode)) return urlMode;
-    const stored = localStorage.getItem('okibar-device-mode');
+    const stored = localStorage.getItem('cantina-device-mode');
     return DEVICE_ROLES.includes(stored) ? stored : null;
   });
   const [currentTable, setCurrentTable] = useState(() => {
     const url = new URLSearchParams(window.location.search);
-    const raw = url.get('table') || localStorage.getItem('okibar-device-table') || '1';
+    const raw = url.get('table') || localStorage.getItem('cantina-device-table') || '1';
     return parseInt(raw, 10) || 1;
   });
   const [tablePage, setTablePage] = useState('karaoke'); // 'karaoke', 'menu'
@@ -109,14 +109,14 @@ const KaraokeBarApp = () => {
   // Cached songs database - songs that have been successfully queued
   const [cachedSongs, setCachedSongs] = useState(() => {
     try {
-      const stored = localStorage.getItem('okibar-cached-songs');
+      const stored = localStorage.getItem('cantina-cached-songs');
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) return parsed;
       }
     } catch (_) {
       // Corrupted cache — fall through to reseed below
-      try { localStorage.removeItem('okibar-cached-songs'); } catch (__) {}
+      try { localStorage.removeItem('cantina-cached-songs'); } catch (__) {}
     }
 
     // Initial seed songs for fresh installations
@@ -151,7 +151,7 @@ const KaraokeBarApp = () => {
       }
     ];
     
-    localStorage.setItem('okibar-cached-songs', JSON.stringify(seedSongs));
+    localStorage.setItem('cantina-cached-songs', JSON.stringify(seedSongs));
     return seedSongs;
   });
   
@@ -241,10 +241,10 @@ const KaraokeBarApp = () => {
 
   // Persist device role + table (per-device, survives refresh)
   useEffect(() => {
-    if (mode) localStorage.setItem('okibar-device-mode', mode);
+    if (mode) localStorage.setItem('cantina-device-mode', mode);
   }, [mode]);
   useEffect(() => {
-    localStorage.setItem('okibar-device-table', String(currentTable));
+    localStorage.setItem('cantina-device-table', String(currentTable));
   }, [currentTable]);
 
   // Socket connection indicator
@@ -519,7 +519,7 @@ const KaraokeBarApp = () => {
       lastSyncedRef.current[key] = JSON.stringify(value === null ? null : value);
       entry[1](value);
       if (key === 'cachedSongs') {
-        localStorage.setItem('okibar-cached-songs', JSON.stringify(value));
+        localStorage.setItem('cantina-cached-songs', JSON.stringify(value));
       }
     };
 
@@ -559,7 +559,7 @@ const KaraokeBarApp = () => {
       
       // Add new song and keep only last 100 songs
       const updated = [song, ...prev].slice(0, 100);
-      localStorage.setItem('okibar-cached-songs', JSON.stringify(updated));
+      localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
       return updated;
     });
   };
@@ -622,7 +622,7 @@ const KaraokeBarApp = () => {
           const updated = prev.map(song => 
             song.videoId === videoId ? { ...song, availability: result.availability } : song
           );
-          localStorage.setItem('okibar-cached-songs', JSON.stringify(updated));
+          localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
           return updated;
         });
       }
@@ -648,7 +648,7 @@ const KaraokeBarApp = () => {
             const newAvailability = result.results[song.videoId];
             return newAvailability ? { ...song, availability: newAvailability } : song;
           });
-          localStorage.setItem('okibar-cached-songs', JSON.stringify(updated));
+          localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
           return updated;
         });
         pushToast(`Rechecked ${result.updatedCount} songs`, 'success');
@@ -673,7 +673,7 @@ const KaraokeBarApp = () => {
           const updated = prev.filter(song => 
             !song.availability || song.availability.playable !== false
           );
-          localStorage.setItem('okibar-cached-songs', JSON.stringify(updated));
+          localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
           return updated;
         });
         pushToast(`Cleared ${result.cleared} blocked songs`, 'success');
@@ -724,7 +724,7 @@ const KaraokeBarApp = () => {
                 const newAvailability = result.results[song.videoId];
                 return newAvailability ? { ...song, availability: newAvailability } : song;
               });
-              localStorage.setItem('okibar-cached-songs', JSON.stringify(updated));
+              localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
               return updated;
             });
             console.log(`✅ Automatic recheck complete: ${result.updatedCount} songs updated`);
@@ -1479,7 +1479,7 @@ const KaraokeBarApp = () => {
   // Staff roles (Bar / TV) are tucked behind the discreet cog top-right.
   if (!mode) {
     return (
-      <div className="okibar-app">
+      <div className="cantina-app">
         {/* Discreet staff entry */}
         <div className="absolute top-5 right-5 z-30">
           <button
@@ -1556,7 +1556,7 @@ const KaraokeBarApp = () => {
     const pendingTotal = (pendingOrders[currentTable] || []).reduce((sum, order) => sum + order.price, 0);
 
     return (
-      <div className="okibar-app">
+      <div className="cantina-app">
         {overlays}
         {/* Top bar */}
         <header className="topbar">
@@ -1594,7 +1594,7 @@ const KaraokeBarApp = () => {
           </div>
         </header>
 
-        <div className="okibar-shell fade-up">
+        <div className="cantina-shell fade-up">
           {/* Stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
             <div className="stat">
@@ -1946,10 +1946,10 @@ const KaraokeBarApp = () => {
             </div>
           </div>
         ) : (
-          <div className="okibar-app flex-1 flex items-center justify-center">
+          <div className="cantina-app flex-1 flex items-center justify-center">
             <div className="text-center px-6">
               <div className="text-7xl mb-6 fade-up">🎤</div>
-              <div className="label mb-3">Okibar Live</div>
+              <div className="label mb-3">Cantina Live</div>
               <h1 className="h-display text-5xl sm:text-7xl mb-8 brand-text">Karaoke Night</h1>
               {globalQueue.length > 0 ? (
                 <div className="panel p-8 inline-block fade-up">
@@ -1991,9 +1991,9 @@ const KaraokeBarApp = () => {
     // device that's about to receive an existing PIN.
     if (!hasPin) {
       return (
-        <div className="okibar-app flex items-center justify-center">
+        <div className="cantina-app flex items-center justify-center">
           {overlays}
-          <div className="okibar-shell fade-up" style={{ maxWidth: '24rem' }}>
+          <div className="cantina-shell fade-up" style={{ maxWidth: '24rem' }}>
             {!syncedOnce ? (
               <div className="panel p-8 text-center">
                 <div className="brand-dot mx-auto mb-4" style={{ width: '1rem', height: '1rem' }} />
@@ -2049,7 +2049,7 @@ const KaraokeBarApp = () => {
     ];
 
     return (
-      <div className="okibar-app">
+      <div className="cantina-app">
         {overlays}
         {/* Top bar */}
         <header className="topbar">
@@ -2080,7 +2080,7 @@ const KaraokeBarApp = () => {
           </div>
         </header>
 
-        <div className="okibar-shell fade-up">
+        <div className="cantina-shell fade-up">
           {/* Page Navigation */}
           <div className="seg seg-scroll mb-6">
             {barTabs.map((tab) => (
@@ -3072,13 +3072,13 @@ const KaraokeBarApp = () => {
                             const response = await fetch(`${API_BASE_URL}/cached-songs`, { method: 'DELETE' });
                             if (response.ok) {
                               setCachedSongs([]);
-                              localStorage.removeItem('okibar-cached-songs');
+                              localStorage.removeItem('cantina-cached-songs');
                               pushToast('All cached songs cleared', 'success');
                             }
                           } catch (error) {
                             console.error('Failed to clear cache on server:', error);
                             setCachedSongs([]);
-                            localStorage.removeItem('okibar-cached-songs');
+                            localStorage.removeItem('cantina-cached-songs');
                             pushToast('Cache cleared locally (server sync failed)', 'warn');
                           }
                         }
@@ -3217,7 +3217,7 @@ const KaraokeBarApp = () => {
                                       if (response.ok) {
                                         setCachedSongs(prev => {
                                           const updated = prev.filter(s => s.videoId !== song.videoId);
-                                          localStorage.setItem('okibar-cached-songs', JSON.stringify(updated));
+                                          localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
                                           return updated;
                                         });
                                       }
@@ -3225,7 +3225,7 @@ const KaraokeBarApp = () => {
                                       console.error('Failed to remove from server cache:', error);
                                       setCachedSongs(prev => {
                                         const updated = prev.filter(s => s.videoId !== song.videoId);
-                                        localStorage.setItem('okibar-cached-songs', JSON.stringify(updated));
+                                        localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
                                         return updated;
                                       });
                                     }

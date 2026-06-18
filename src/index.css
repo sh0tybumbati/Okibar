@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* =========================================================================
-   OKIBAR DESIGN SYSTEM
+   CANTINA DESIGN SYSTEM
    A themeable, professional dark UI for venue staff tooling.
    Brand chrome (background, panels, primary accents, headings) is driven
    entirely by CSS variables so the in-app theme selector can re-skin every
@@ -186,14 +186,14 @@ body {
 /* ---- COMPONENT LAYER ---------------------------------------------------- */
 
 @layer components {
-  .okibar-app {
+  .cantina-app {
     position: relative;
     min-height: 100vh;
     background: var(--bg);
     color: var(--text);
     font-family: var(--font-body);
   }
-  .okibar-app::before {
+  .cantina-app::before {
     content: '';
     position: fixed;
     inset: 0;
@@ -201,10 +201,10 @@ body {
     pointer-events: none;
     z-index: 0;
   }
-  .okibar-app > * { position: relative; z-index: 1; }
+  .cantina-app > * { position: relative; z-index: 1; }
 
   /* Fluid, full-width content wrapper (no fixed max-width) */
-  .okibar-shell {
+  .cantina-shell {
     width: 100%;
     margin: 0 auto;
     padding: 1.5rem clamp(1rem, 3vw, 2.75rem) 4rem;

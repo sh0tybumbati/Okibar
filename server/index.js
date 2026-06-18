@@ -28,7 +28,7 @@ app.use(express.static(path.join(__dirname, '..', 'build')));
 // Single source of truth for everything the clients mirror across devices
 // (queue, tables, menu, playback, cached songs, settings). Clients push
 // changes via the 'state:update' socket event and hydrate from 'state:init'.
-const STATE_FILE = process.env.OKIBAR_STATE_FILE || path.join(__dirname, 'state.json');
+const STATE_FILE = process.env.CANTINA_STATE_FILE || path.join(__dirname, 'state.json');
 let sharedState = {};
 try {
   sharedState = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
@@ -274,7 +274,7 @@ app.get('*', (req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', async () => {
-  console.log(`🚀 Okibar server running on port ${PORT}`);
+  console.log(`🚀 Cantina server running on port ${PORT}`);
 
   console.log('🔧 Testing YouTube API configuration...');
   const isApiKeyValid = await testApiKey();
