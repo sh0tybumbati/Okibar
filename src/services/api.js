@@ -35,6 +35,12 @@ const apiService = {
   getCachedSongs: async () => {
     const response = await fetch(`${API_BASE_URL}/cached-songs`);
     return response.json();
+  },
+
+  // Get this machine's LAN host (ip:port) for guest QR deep links
+  getHost: async () => {
+    const response = await fetch(`${API_BASE_URL}/host`);
+    return response.json();
   }
 };
 

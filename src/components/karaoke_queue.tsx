@@ -67,6 +67,7 @@ const KaraokeBarApp = () => {
   const [isRecheckingCache, setIsRecheckingCache] = useState(false);
   const [currency, setCurrency] = useState('$');
   const [theme, setTheme] = useState('midnight');
+  const [lanHost, setLanHost] = useState(null);           // ip:port for guest QR (from /api/host)
   const [staffPin, setStaffPin] = useState('');           // synced staff PIN ('' = off)
   const [pinGate, setPinGate] = useState(null);           // { action } pending PIN-gated action
   const [pinEntry, setPinEntry] = useState('');
@@ -229,6 +230,14 @@ const KaraokeBarApp = () => {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  // The desktop window serves the console from localhost; phones can't reach
+  // that. Ask the server for its LAN ip:port and build QR links from it.
+  useEffect(() => {
+    apiService.getHost()
+      .then((data) => { if (data && data.host) setLanHost(data.host); })
+      .catch(() => {});
+  }, []);
 
   // Persist device role + table (per-device, survives refresh)
   useEffect(() => {
@@ -1181,7 +1190,10 @@ const KaraokeBarApp = () => {
   const assignRole = (role) => setMode(role);
 
   // Deep link that opens (or syncs) a device straight into a given table
-  const tableUrl = (n) => `${window.location.origin}/?mode=table&table=${n}`;
+  const tableUrl = (n) => {
+    const base = lanHost ? `http://${lanHost}` : window.location.origin;
+    return `${base}/?mode=table&table=${n}`;
+  };
 
   // Connection indicator shared across top bars
   const connDot = (
