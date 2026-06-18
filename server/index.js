@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const { searchKaraokeVideos, testApiKey, checkVideoAvailability, batchCheckAvailability } = require('./youtubeApi');
@@ -27,7 +28,7 @@ app.use(express.static(path.join(__dirname, '..', 'build')));
 // Single source of truth for everything the clients mirror across devices
 // (queue, tables, menu, playback, cached songs, settings). Clients push
 // changes via the 'state:update' socket event and hydrate from 'state:init'.
-const STATE_FILE = path.join(__dirname, 'state.json');
+const STATE_FILE = process.env.OKIBAR_STATE_FILE || path.join(__dirname, 'state.json');
 let sharedState = {};
 try {
   sharedState = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
@@ -250,12 +251,29 @@ io.on('connection', (socket) => {
   });
 });
 
+// --- LAN HOST (for guest QR codes) ---
+// The desktop window loads the console from localhost, but phones must reach
+// this machine by its LAN IP. Resolve the first non-internal IPv4 address.
+function getLanIp() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name] || []) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return '127.0.0.1';
+}
+
+app.get('/api/host', (req, res) => {
+  res.json({ host: `${getLanIp()}:${PORT}` });
+});
+
 // Serve React app for all non-API routes (must be last)
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'build', 'index.html'));
 });
 
-server.listen(PORT, async () => {
+server.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 Okibar server running on port ${PORT}`);
 
   console.log('🔧 Testing YouTube API configuration...');
