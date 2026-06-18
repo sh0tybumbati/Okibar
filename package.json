@@ -2,6 +2,7 @@
   "name": "okibar-karaoke",
   "version": "1.0.0",
   "description": "Karaoke bar management system with YouTube integration",
+  "author": "Okibar",
   "main": "electron/main.js",
   "engines": {
     "node": ">=18.0.0",
@@ -56,5 +57,25 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "build": {
+    "extends": null,
+    "appId": "com.okibar.app",
+    "productName": "Okibar",
+    "files": [
+      "build/**/*",
+      "server/**/*",
+      "electron/**/*",
+      "node_modules/**/*",
+      "!**/node_modules/.cache",
+      "!server/state.json"
+    ],
+    "extraResources": [
+      { "from": ".env", "to": ".env" }
+    ],
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "AudioVideo"
+    }
   }
 }
