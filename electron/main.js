@@ -6,6 +6,11 @@ const net = require('net');
 const PORT = process.env.PORT || 5000;
 let mainWindow = null;
 
+// Use the product name for the runtime app identity so the user-data dir is
+// ~/.config/Okibar (Electron otherwise defaults to the package.json "name").
+// Must run before any app.getPath() call.
+app.setName('Okibar');
+
 // 1. Writable data dir — a packaged app cannot write inside its install dir.
 const userDataDir = app.getPath('userData');
 fs.mkdirSync(userDataDir, { recursive: true });
