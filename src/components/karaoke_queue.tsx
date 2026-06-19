@@ -86,6 +86,7 @@ const KaraokeBarApp = () => {
   const [memberForm, setMemberForm] = useState(null);     // {tableNum, name} add-guest modal
   const [checkout, setCheckout] = useState(null);         // {tableNum} checkout/split modal
   const [checkoutPaid, setCheckoutPaid] = useState({});   // memberId|'shared' -> paid bool
+  const [sharedOwners, setSharedOwners] = useState({}); // sharedItemKey -> string[] memberIds (subset that splits it)
   // History (sales + guests by calendar)
   const [historyMode, setHistoryMode] = useState('sales'); // 'sales' | 'guests'
   const [historyMonth, setHistoryMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
@@ -1017,10 +1018,14 @@ const KaraokeBarApp = () => {
     }));
   };
 
-  // Split a table's confirmed orders by member; shared items split evenly
-  const computeSplit = (tableNum) => {
+  // Split a table's confirmed orders by member. Member-tagged items go to that
+  // member; each shared (untagged) item is divided among its "owners" — the
+  // members ticked for it (default: everyone). An empty owner set falls back to
+  // all members so a shared item's cost is never dropped.
+  const computeSplit = (tableNum, owners = {}) => {
     const t = tables[tableNum] || {};
     const members = t.members || [];
+    const allIds = members.map(m => m.id);
     const orders = t.orders || [];
     const perMember = {};
     members.forEach(m => { perMember[m.id] = { id: m.id, name: m.name, items: [], itemsTotal: 0, total: 0 }; });
@@ -1031,18 +1036,26 @@ const KaraokeBarApp = () => {
         perMember[o.memberId].items.push(o);
         perMember[o.memberId].itemsTotal += o.price;
       } else {
-        sharedItems.push(o);
+        const key = sharedItems.length;            // index within the shared list
+        sharedItems.push({ ...o, _key: key });
         sharedTotal += o.price;
       }
     });
-    const sharedSplit = members.length ? sharedTotal / members.length : 0;
-    members.forEach(m => { perMember[m.id].total = perMember[m.id].itemsTotal + sharedSplit; });
-    return { members, perMember, sharedItems, sharedTotal, sharedSplit, grandTotal: t.totalSpent || 0 };
+    if (members.length) {
+      sharedItems.forEach(item => {
+        const picked = (owners[item._key] && owners[item._key].length) ? owners[item._key] : allIds;
+        const each = item.price / picked.length;
+        picked.forEach(id => { if (perMember[id]) perMember[id].total += each; });
+      });
+      members.forEach(m => { perMember[m.id].total += perMember[m.id].itemsTotal; });
+    }
+    return { members, perMember, sharedItems, sharedTotal, grandTotal: t.totalSpent || 0 };
   };
 
   const openCheckout = (tableNum) => {
     setCheckout({ tableNum });
     setCheckoutPaid({});
+    setSharedOwners({});
   };
 
   const resetTable = (tableNum) => {
@@ -1068,7 +1081,7 @@ const KaraokeBarApp = () => {
   const finalizeCheckout = (tableNum, paidMap) => {
     const t = tables[tableNum];
     if (!t) return;
-    const split = computeSplit(tableNum);
+    const split = computeSplit(tableNum, sharedOwners);
     const hasMembers = split.members.length > 0;
     const grandTotal = t.totalSpent || 0;
 
@@ -1375,7 +1388,14 @@ const KaraokeBarApp = () => {
       {/* Checkout / split-bill modal */}
       {checkout && (() => {
         const t = tables[checkout.tableNum] || {};
-        const split = computeSplit(checkout.tableNum);
+        const split = computeSplit(checkout.tableNum, sharedOwners);
+        const allIds = split.members.map(m => m.id);
+        const ownersFor = (key) => sharedOwners[key] && sharedOwners[key].length ? sharedOwners[key] : allIds;
+        const toggleOwner = (key, mid) => setSharedOwners(prev => {
+          const cur = prev[key] && prev[key].length ? prev[key] : allIds;
+          const next = cur.includes(mid) ? cur.filter(x => x !== mid) : [...cur, mid];
+          return { ...prev, [key]: next };
+        });
         const hasMembers = split.members.length > 0;
         const lines = hasMembers
           ? split.members.map(m => ({ key: m.id, name: m.name, total: split.perMember[m.id].total, items: split.perMember[m.id].items.length }))
@@ -1394,7 +1414,7 @@ const KaraokeBarApp = () => {
               </div>
               <p className="muted text-sm mb-4">
                 {hasMembers ? 'Tap each guest as they pay.' : 'No named guests — settle the whole bill, or add names in Guests to split.'}
-                {split.sharedTotal > 0 && hasMembers && <> Shared items ({currency}{split.sharedTotal.toFixed(2)}) are split evenly.</>}
+                {split.sharedTotal > 0 && hasMembers && <> Shared items ({currency}{split.sharedTotal.toFixed(2)}) split among whoever you tick below.</>}
               </p>
 
               <div className="space-y-2 max-h-[46vh] overflow-y-auto pr-1">
@@ -1419,6 +1439,31 @@ const KaraokeBarApp = () => {
                   </button>
                 ))}
               </div>
+
+              {hasMembers && split.sharedItems.length > 0 && (
+                <div className="subpanel p-3 mt-3 space-y-2">
+                  <div className="label">Shared items — tap who's splitting each</div>
+                  {split.sharedItems.map(item => (
+                    <div key={item._key} className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="text-sm">{item.name} <span className="dim">{currency}{item.price.toFixed(2)}</span></div>
+                      <div className="flex gap-1 flex-wrap">
+                        {split.members.map(m => {
+                          const on = ownersFor(item._key).includes(m.id);
+                          return (
+                            <button
+                              key={m.id}
+                              onClick={() => toggleOwner(item._key, m.id)}
+                              className={`btn btn-sm ${on ? 'btn-primary' : 'btn-ghost'}`}
+                            >
+                              {m.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <div className="subpanel p-3 mt-4 space-y-1">
                 <div className="flex justify-between text-sm"><span className="muted">Bill total</span><span className="money">{currency}{(t.totalSpent || 0).toFixed(2)}</span></div>
