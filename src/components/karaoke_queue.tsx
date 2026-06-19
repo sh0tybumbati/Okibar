@@ -226,6 +226,7 @@ const KaraokeBarApp = () => {
   const floorRef = useRef(null);       // floor-plan container
   const reposRef = useRef(null);       // table number being repositioned
   const dragGroupRef = useRef(null);   // source table number when relocating a group
+  const tokenDraggedRef = useRef(false); // guards against the click a drag fires on its source token
 
   // Apply the selected venue theme to the document (drives CSS variables)
   useEffect(() => {
@@ -2232,7 +2233,8 @@ const KaraokeBarApp = () => {
                       onPointerUp={onPointerUpRepos}
                       // Group relocation (normal mode): drag occupied → drop on another
                       draggable={!isEditMode && occupied}
-                      onDragStart={() => { if (!isEditMode && occupied) dragGroupRef.current = table.number; }}
+                      onDragStart={() => { if (!isEditMode && occupied) { dragGroupRef.current = table.number; tokenDraggedRef.current = true; } }}
+                      onDragEnd={() => { setTimeout(() => { tokenDraggedRef.current = false; }, 0); }}
                       onDragOver={(e) => { if (!isEditMode) e.preventDefault(); }}
                       onDrop={() => {
                         if (isEditMode) return;
@@ -2249,7 +2251,7 @@ const KaraokeBarApp = () => {
                         });
                       }}
                       title={occupied ? `${data.groupName || `Table ${table.number}`}` : `Table ${table.number} (empty)`}
-                      onClick={() => { if (!isEditMode && occupied) openCheckout(String(table.number)); }}
+                      onClick={() => { if (!isEditMode && occupied && !tokenDraggedRef.current) openCheckout(String(table.number)); }}
                     >
                       <div className="floor-num">{table.number}</div>
                       <div className="floor-occ">{occupied ? `${data.guestCount}/${table.maxOccupancy}` : table.maxOccupancy}</div>
