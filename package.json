@@ -17,7 +17,8 @@
     "test": "react-scripts test",
     "electron:dev": "npm run build && electron .",
     "electron:pack": "npm run build && electron-builder --linux --dir",
-    "electron:build": "npm run build && electron-builder --linux"
+    "electron:build": "npm run build && electron-builder --linux",
+    "electron:build:win": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "autoprefixer": "^10.4.21",
@@ -79,6 +80,10 @@
       "category": "AudioVideo",
       "maintainer": "Cantina <noreply@cantina.app>",
       "icon": "build-assets/icon.png"
+    },
+    "win": {
+      "target": ["nsis", "portable"],
+      "icon": "build-assets/icon.ico"
     }
   }
 }
