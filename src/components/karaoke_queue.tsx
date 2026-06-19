@@ -85,7 +85,7 @@ const KaraokeBarApp = () => {
   const [orderingMemberId, setOrderingMemberId] = useState(null); // table mode: "ordering as"
   const [memberForm, setMemberForm] = useState(null);     // {tableNum, name} add-guest modal
   const [checkout, setCheckout] = useState(null);         // {tableNum} checkout/split modal
-  const [checkoutPaid, setCheckoutPaid] = useState({});   // memberId|'shared' -> paid bool
+  const [checkoutPaid, setCheckoutPaid] = useState({});   // memberId|'group' -> paid bool
   const [sharedOwners, setSharedOwners] = useState({}); // sharedItemKey -> string[] memberIds (subset that splits it)
   // History (sales + guests by calendar)
   const [historyMode, setHistoryMode] = useState('sales'); // 'sales' | 'guests'
