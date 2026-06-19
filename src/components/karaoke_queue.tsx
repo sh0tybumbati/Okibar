@@ -2249,6 +2249,7 @@ const KaraokeBarApp = () => {
                         });
                       }}
                       title={occupied ? `${data.groupName || `Table ${table.number}`}` : `Table ${table.number} (empty)`}
+                      onClick={() => { if (!isEditMode && occupied) openCheckout(String(table.number)); }}
                     >
                       <div className="floor-num">{table.number}</div>
                       <div className="floor-occ">{occupied ? `${data.guestCount}/${table.maxOccupancy}` : table.maxOccupancy}</div>
