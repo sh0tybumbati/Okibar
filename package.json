@@ -62,6 +62,7 @@
     "extends": null,
     "appId": "com.cantina.app",
     "productName": "Cantina",
+    "directories": { "buildResources": "build-assets" },
     "files": [
       "build/**/*",
       "server/**/*",
@@ -76,7 +77,8 @@
     "linux": {
       "target": ["AppImage", "deb"],
       "category": "AudioVideo",
-      "maintainer": "Cantina <noreply@cantina.app>"
+      "maintainer": "Cantina <noreply@cantina.app>",
+      "icon": "build-assets/icon.png"
     }
   }
 }
