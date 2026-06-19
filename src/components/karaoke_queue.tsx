@@ -1129,6 +1129,25 @@ const KaraokeBarApp = () => {
     );
   };
 
+  // Outstanding tabs = archived checkouts left unpaid (Close as Tab).
+  const openTabs = Object.entries(groupHistory)
+    .flatMap(([groupKey, entries]) => (entries || []).map(e => ({ ...e, groupKey })))
+    .filter(e => e.paid === false && (e.amountTab || 0) > 0)
+    .sort((a, b) => new Date(b.checkoutTime) - new Date(a.checkoutTime));
+
+  // Settle an open tab in full: mark it paid and zero the outstanding balance.
+  const settleTab = (groupKey, entryId) => {
+    setGroupHistory(prev => ({
+      ...prev,
+      [groupKey]: (prev[groupKey] || []).map(e =>
+        e.id === entryId
+          ? { ...e, amountPaid: (e.amountPaid || 0) + (e.amountTab || 0), amountTab: 0, paid: true, settledAt: new Date().toISOString() }
+          : e
+      ),
+    }));
+    pushToast('Tab settled', 'success');
+  };
+
   // Transfer table
   const transferTable = (fromTable, toTable) => {
     const sourceTable = tables[fromTable];
@@ -2045,6 +2064,7 @@ const KaraokeBarApp = () => {
       { id: 'tables', label: '🪑 Tables' },
       { id: 'menu', label: '🍽️ Menu' },
       { id: 'history', label: '📅 History' },
+      { id: 'tabs', label: '💳 Tabs' },
       { id: 'settings', label: '⚙️ Settings' }
     ];
 
@@ -2098,7 +2118,7 @@ const KaraokeBarApp = () => {
                 onClick={() => setBarPage(tab.id)}
                 className={`seg-btn ${barPage === tab.id ? 'is-active' : ''}`}
               >
-                {tab.label}
+                {tab.label}{tab.id === 'tabs' && openTabs.length ? ` (${openTabs.length})` : ''}
               </button>
             ))}
           </div>
@@ -2884,6 +2904,38 @@ const KaraokeBarApp = () => {
               </div>
             );
           })()}
+
+          {barPage === 'tabs' && (
+            <div className="space-y-3">
+              <h3 className="h-display text-xl mb-2">Open Tabs</h3>
+              {openTabs.length === 0 && <div className="muted text-sm">No open tabs.</div>}
+              {openTabs.map(tab => (
+                <div key={tab.id} className="panel p-4 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="font-semibold">{tab.groupName} · Table {tab.tableNumber}</div>
+                    <div className="text-xs dim">
+                      {(tab.members || []).map(m => m.name).join(', ') || `Table of ${tab.guestCount}`}
+                      {' · '}{new Date(tab.checkoutTime).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="money" style={{ color: 'var(--warn)' }}>{currency}{(tab.amountTab || 0).toFixed(2)}</span>
+                    <button
+                      className="btn btn-sm btn-primary"
+                      onClick={() => askConfirm({
+                        title: `Settle ${tab.groupName}'s tab?`,
+                        body: `${currency}${(tab.amountTab || 0).toFixed(2)} will be marked paid.`,
+                        confirmLabel: 'Collect & Settle',
+                        onConfirm: () => settleTab(tab.groupKey, tab.id),
+                      })}
+                    >
+                      <CheckCircle className="w-4 h-4" /> Collect
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Settings Page */}
           {barPage === 'settings' && (
