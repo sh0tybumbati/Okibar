@@ -1511,7 +1511,7 @@ const KaraokeBarApp = () => {
         <div className="min-h-screen flex items-center justify-center px-4 py-10">
           <div className="text-center fade-up w-full" style={{ maxWidth: '560px' }}>
             <div className="brand-dot mx-auto mb-6" style={{ width: '1rem', height: '1rem' }} />
-            <div className="wordmark text-5xl sm:text-6xl mb-3">Oki<span className="brand-text">bar</span></div>
+            <div className="wordmark text-5xl sm:text-6xl mb-3">Can<span className="brand-text">tina</span></div>
             <p className="text-lg sm:text-xl muted mb-10">Karaoke, drinks &amp; good times.</p>
 
             <div className="panel p-8">
@@ -1564,7 +1564,7 @@ const KaraokeBarApp = () => {
             <div className="flex items-center gap-3">
               <span className="brand-dot" />
               <div className="leading-tight">
-                <div className="wordmark text-xl">Oki<span className="brand-text">bar</span></div>
+                <div className="wordmark text-xl">Can<span className="brand-text">tina</span></div>
                 <div className="label" style={{ marginTop: '2px' }}>{groupName}</div>
               </div>
             </div>
@@ -2057,7 +2057,7 @@ const KaraokeBarApp = () => {
             <div className="flex items-center gap-3">
               <span className="brand-dot" />
               <div className="leading-tight">
-                <div className="wordmark text-xl">Oki<span className="brand-text">bar</span></div>
+                <div className="wordmark text-xl">Can<span className="brand-text">tina</span></div>
                 <div className="label" style={{ marginTop: '2px' }}>Admin Console</div>
               </div>
               {(barPage === 'menu' || barPage === 'tables' || barPage === 'floor') && (
