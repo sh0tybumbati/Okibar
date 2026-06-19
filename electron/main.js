@@ -1,10 +1,11 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
 
 const PORT = process.env.PORT || 5000;
 let mainWindow = null;
+let tvWindow = null;
 
 // Use the product name for the runtime app identity so the user-data dir is
 // ~/.config/Cantina (Electron otherwise defaults to the package.json "name").
@@ -78,6 +79,24 @@ app.whenReady().then(async () => {
   // Boot the bundled back end in-process.
   require(path.join(__dirname, '..', 'server', 'index.js'));
   createWindow();
+  ipcMain.on('open-tv-window', () => {
+    if (tvWindow && !tvWindow.isDestroyed()) {
+      tvWindow.focus();
+      return;
+    }
+    tvWindow = new BrowserWindow({
+      width: 1280,
+      height: 720,
+      title: 'Cantina — TV',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    tvWindow.loadURL(`http://localhost:${PORT}/?mode=tv`).catch(() => {});
+    tvWindow.on('closed', () => { tvWindow = null; });
+  });
 });
 
 app.on('window-all-closed', () => app.quit());

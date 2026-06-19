@@ -2069,6 +2069,15 @@ const KaraokeBarApp = () => {
                   {isEditMode ? 'Done' : (barPage === 'menu' ? 'Edit Menu' : barPage === 'floor' ? 'Arrange' : 'Edit Tables')}
                 </button>
               )}
+              {typeof window !== 'undefined' && window.cantina?.isDesktop && (
+                <button
+                  onClick={() => window.cantina.openTvWindow()}
+                  className="btn btn-sm ml-2 btn-ghost"
+                  title="Open the TV/player view in its own window"
+                >
+                  <Monitor className="w-4 h-4" /> TV Window
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-3">
               {connDot}
