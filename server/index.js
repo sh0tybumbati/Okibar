@@ -6,7 +6,8 @@ const fs = require('fs');
 const os = require('os');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const { searchKaraokeVideos, testApiKey, checkVideoAvailability, batchCheckAvailability, getVideoChannel } = require('./youtubeApi');
+const { searchKaraokeVideos, testApiKey, checkVideoAvailability, batchCheckAvailability } = require('./youtubeApi');
+const { archiveVideo, findArchivedFile, checkYtDlpAvailable, MEDIA_DIR } = require('./archiver');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,6 +24,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'build')));
+app.use('/media', express.static(MEDIA_DIR));
 
 // --- SHARED STATE ---
 // Single source of truth for everything the clients mirror across devices
@@ -67,20 +69,17 @@ app.get('/api/search', async (req, res) => {
     try {
       const results = await searchKaraokeVideos(q);
 
-      // Enhance results with availability status from cache, and drop any
-      // video from a channel that's been blacklisted for disabling embedding.
+      // Enhance results with availability + archive status from cache.
       const cachedSongs = getCachedSongs();
-      const blacklistedChannelIds = new Set((sharedState.blacklistedChannels || []).map(c => c.channelId));
-      const enhancedResults = results
-        .filter(song => !blacklistedChannelIds.has(song.channelId))
-        .map(song => {
-          const cachedSong = cachedSongs.find(cached => cached.videoId === song.videoId);
-          return {
-            ...song,
-            availability: cachedSong?.availability || null,
-            isBlocked: cachedSong?.availability?.playable === false
-          };
-        });
+      const enhancedResults = results.map(song => {
+        const cachedSong = cachedSongs.find(cached => cached.videoId === song.videoId);
+        return {
+          ...song,
+          availability: cachedSong?.availability || null,
+          isBlocked: cachedSong?.availability?.playable === false,
+          archive: cachedSong?.archive || null
+        };
+      });
 
       console.log('✅ YouTube API success, returning', enhancedResults.length, 'results');
       res.json(enhancedResults);
@@ -228,19 +227,63 @@ app.post('/api/cached-songs/batch-recheck', async (req, res) => {
   }
 });
 
-// --- CHANNEL BLACKLIST ---
-// Songs that predate channelId tracking on search results don't carry it, so
-// let the client ask the server to resolve a video's channel before blacklisting.
-app.post('/api/channels/resolve', async (req, res) => {
-  const { videoId } = req.body;
+// --- LOCAL ARCHIVE (fallback for videos that fail to embed) ---
+// Patches just the `archive` field of a cached song and broadcasts it.
+const setArchiveStatus = (videoId, patch) => {
+  const cachedSongs = getCachedSongs();
+  const idx = cachedSongs.findIndex(s => s.videoId === videoId);
+  if (idx === -1) return;
+  const updated = [...cachedSongs];
+  updated[idx] = { ...updated[idx], archive: { ...updated[idx].archive, ...patch } };
+  setCachedSongs(updated);
+};
+
+app.post('/api/archive', async (req, res) => {
+  const { videoId, title, thumbnail, channel } = req.body;
   if (!videoId) {
     return res.status(400).json({ success: false, message: 'videoId is required' });
   }
-  const info = await getVideoChannel(videoId);
-  if (!info || !info.channelId) {
-    return res.status(404).json({ success: false, message: 'Could not resolve channel for video' });
+
+  const existingFile = findArchivedFile(videoId);
+  if (existingFile) {
+    return res.json({ success: true, archive: { status: 'ready', progress: 100, file: existingFile } });
   }
-  res.json({ success: true, ...info });
+
+  const cachedSongs = getCachedSongs();
+  let song = cachedSongs.find(s => s.videoId === videoId);
+  if (!song) {
+    song = { videoId, title: title || 'Unknown', thumbnail: thumbnail || '', channel: channel || '' };
+    setCachedSongs([song, ...cachedSongs].slice(0, 100));
+  }
+  if (song.archive && song.archive.status === 'downloading') {
+    return res.json({ success: true, archive: song.archive });
+  }
+
+  const available = await checkYtDlpAvailable();
+  if (!available) {
+    setArchiveStatus(videoId, { status: 'failed', progress: 0, reason: 'yt-dlp is not installed on this machine' });
+    return res.status(503).json({ success: false, message: 'yt-dlp is not installed on this machine' });
+  }
+
+  setArchiveStatus(videoId, { status: 'downloading', progress: 0, reason: null });
+  res.json({ success: true, archive: { status: 'downloading', progress: 0 } });
+
+  // Downloading can take a while — respond immediately above, then stream
+  // progress and the final result over the existing state:update socket.
+  let lastBroadcast = 0;
+  archiveVideo(videoId, {
+    onProgress: (progress) => {
+      if (progress - lastBroadcast < 10 && progress < 99) return;
+      lastBroadcast = progress;
+      setArchiveStatus(videoId, { status: 'downloading', progress });
+    }
+  }).then((result) => {
+    if (result.success) {
+      setArchiveStatus(videoId, { status: 'ready', progress: 100, file: result.file, reason: null });
+    } else {
+      setArchiveStatus(videoId, { status: 'failed', progress: 0, reason: result.reason });
+    }
+  });
 });
 
 // --- SOCKET SYNC ---

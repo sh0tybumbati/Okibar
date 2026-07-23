@@ -31,7 +31,7 @@ const searchKaraokeVideos = async (query, maxResults = 10) => {
       order: 'relevance',
       videoCategoryId: '10', // Music category
       safeSearch: 'strict',
-      fields: 'items(id/videoId,snippet(title,channelId,channelTitle,thumbnails/medium/url,publishedAt))'
+      fields: 'items(id/videoId,snippet(title,channelTitle,thumbnails/medium/url,publishedAt))'
     });
 
     const results = response.data.items.map(item => ({
@@ -40,7 +40,6 @@ const searchKaraokeVideos = async (query, maxResults = 10) => {
       title: item.snippet.title,
       thumbnail: item.snippet.thumbnails?.medium?.url || 'https://img.youtube.com/vi/' + item.id.videoId + '/mqdefault.jpg',
       channel: item.snippet.channelTitle,
-      channelId: item.snippet.channelId,
       publishedAt: item.snippet.publishedAt
     }));
 
@@ -203,27 +202,6 @@ const checkVideoAvailability = async (videoId) => {
   }
 };
 
-// Look up the channel behind a video — used to resolve a channel to blacklist
-// when the song was cached before channelId was tracked on search results.
-const getVideoChannel = async (videoId) => {
-  if (!process.env.YOUTUBE_API_KEY || process.env.YOUTUBE_API_KEY === 'YOUR_YOUTUBE_API_KEY_HERE') {
-    return null;
-  }
-  try {
-    const response = await youtube.videos.list({
-      part: 'snippet',
-      id: videoId,
-      fields: 'items(snippet(channelId,channelTitle))'
-    });
-    const snippet = response.data.items?.[0]?.snippet;
-    if (!snippet) return null;
-    return { channelId: snippet.channelId, channelTitle: snippet.channelTitle };
-  } catch (error) {
-    console.error(`❌ Failed to resolve channel for video ${videoId}:`, error.message);
-    return null;
-  }
-};
-
 // Batch check multiple videos for availability
 const batchCheckAvailability = async (videoIds) => {
   console.log(`🔄 Batch checking availability for ${videoIds.length} videos`);
@@ -263,6 +241,5 @@ module.exports = {
   searchKaraokeVideos,
   testApiKey,
   checkVideoAvailability,
-  batchCheckAvailability,
-  getVideoChannel
+  batchCheckAvailability
 };

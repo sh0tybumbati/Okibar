@@ -7,6 +7,13 @@ export const API_BASE_URL =
     ? `http://${window.location.hostname}:5000/api`
     : '/api');
 
+// Same server, no /api suffix — for static assets like archived video files.
+export const SERVER_ORIGIN =
+  process.env.REACT_APP_SERVER_URL ||
+  (window.location.port === '3000'
+    ? `http://${window.location.hostname}:5000`
+    : window.location.origin);
+
 const apiService = {
   // YouTube search
   searchVideos: async (query) => {

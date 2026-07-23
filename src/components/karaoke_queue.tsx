@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Pause, SkipForward, Trash2, GripVertical, Monitor, Smartphone, Volume2, VolumeX, Search, Clock, Users, Settings, QrCode, CheckCircle, Edit3, Plus, Database, X, RefreshCw, ExternalLink, AlertTriangle, Palette, Check, Music2, Mic2, DollarSign, UserPlus, Maximize2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import apiService, { API_BASE_URL } from '../services/api';
+import apiService, { API_BASE_URL, SERVER_ORIGIN } from '../services/api';
 import socket from '../services/socket';
 import { hashPin, isHashedPin } from '../utils/hash';
 
@@ -73,6 +73,15 @@ const KaraokeBarApp = () => {
     }
   });
   const guestLabel = `Guest ${(parseInt(guestId.slice(1), 36) % 9000) + 1000}`;
+  // Optional display name a guest can set for themselves, overriding guestLabel.
+  const [guestName, setGuestNameState] = useState(() => {
+    try { return localStorage.getItem('cantina-guest-name') || ''; } catch (_) { return ''; }
+  });
+  const setGuestName = (name) => {
+    setGuestNameState(name);
+    try { localStorage.setItem('cantina-guest-name', name); } catch (_) {}
+  };
+  const [guestNameEdit, setGuestNameEdit] = useState(null); // draft string while the rename modal is open
   const [tablePage, setTablePage] = useState('karaoke'); // 'karaoke', 'menu'
   const [barPage, setBarPage] = useState('queue'); // 'queue', 'orders', 'guests'
   const [showTableManager, setShowTableManager] = useState(false);
@@ -120,9 +129,6 @@ const KaraokeBarApp = () => {
   const [currentSongStartedAt, setCurrentSongStartedAt] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
-  // Channels blacklisted after a song errored with "embedding disabled" —
-  // future search results and cached/queued songs from them are filtered out.
-  const [blacklistedChannels, setBlacklistedChannels] = useState([]);
   // Simple Queue Mode: strips ordering/tables/floor/billing down to just the
   // karaoke queue, for venues (or events) that don't need the bar features.
   const [simpleMode, setSimpleMode] = useState(false);
@@ -371,10 +377,11 @@ const KaraokeBarApp = () => {
       else if (checkout) setCheckout(null);
       else if (showCacheViewer) setShowCacheViewer(false);
       else if (staffMenu) setStaffMenu(false);
+      else if (guestNameEdit != null) setGuestNameEdit(null);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [pinGate, qrTable, menuForm, memberForm, transferForm, checkout, confirmState, showCacheViewer, staffMenu]);
+  }, [pinGate, qrTable, menuForm, memberForm, transferForm, checkout, confirmState, showCacheViewer, staffMenu, guestNameEdit]);
 
   // Bar-mode keyboard shortcuts: Space = play/pause, n = next
   useEffect(() => {
@@ -456,12 +463,19 @@ const KaraokeBarApp = () => {
     } catch (_) {}
   };
 
+  // If this song already has a local copy, play that instead of touching
+  // YouTube's embed at all — sidesteps "embedding disabled" completely
+  // rather than just reacting to it after the fact.
+  const currentSongArchive = currentSong ? cachedSongs.find(s => s.videoId === currentSong.videoId)?.archive : null;
+  const isLocalPlayback = currentSongArchive?.status === 'ready';
+
   // --- TV PLAYER (YouTube IFrame API) ---
   // Drives real progress + auto-advance on song end. Falls back silently to a
   // plain iframe (rendered in the markup) if the API can't initialize.
   useEffect(() => {
-    if (mode !== 'tv' || !currentSong || !isPlaying) {
+    if (mode !== 'tv' || !currentSong || !isPlaying || isLocalPlayback) {
       setProgress({ current: 0, duration: 0 });
+      setYtFallback(false);
       return;
     }
     let cancelled = false;
@@ -489,7 +503,7 @@ const KaraokeBarApp = () => {
           onError: (e) => {
             // 101/150 = the video owner disabled embedded playback. Don't
             // bother falling back to a raw iframe — it'll show the same
-            // "Video unavailable" screen. Blacklist the channel and skip.
+            // "Video unavailable" screen. Archive it locally and skip.
             if (e?.data === 101 || e?.data === 150) {
               handleEmbedBlocked(currentSong);
             } else {
@@ -516,7 +530,7 @@ const KaraokeBarApp = () => {
       try { if (ytHostRef.current) ytHostRef.current.innerHTML = ''; } catch (_) {}
       ytPlayerRef.current = null;
     };
-  }, [mode, currentSong?.videoId, isPlaying, currentSongStartedAt]);
+  }, [mode, currentSong?.videoId, isPlaying, currentSongStartedAt, isLocalPlayback]);
 
   // Toggle mute on the live player without rebuilding it
   useEffect(() => {
@@ -554,7 +568,6 @@ const KaraokeBarApp = () => {
     currency: [currency, setCurrency],
     theme: [theme, setTheme],
     staffPin: [staffPin, setStaffPin],
-    blacklistedChannels: [blacklistedChannels, setBlacklistedChannels],
     simpleMode: [simpleMode, setSimpleMode],
     currentSongStartedAt: [currentSongStartedAt, setCurrentSongStartedAt]
   };
@@ -623,54 +636,26 @@ const KaraokeBarApp = () => {
     });
   };
 
-  // Blacklist an entire channel (it disables embedding) — drops it from the
-  // cache and the live queue, and future /api/search results exclude it too.
-  const blacklistChannel = (channelId, channelTitle, reason) => {
-    const matchesChannel = (song) =>
-      song.channelId === channelId ||
-      (!song.channelId && channelTitle && (song.channel || '').toLowerCase() === channelTitle.toLowerCase());
-
-    setBlacklistedChannels(prev => {
-      if (prev.some(c => c.channelId === channelId)) return prev;
-      return [...prev, { channelId, channelTitle: channelTitle || 'Unknown channel', reason, blacklistedAt: new Date().toISOString() }];
-    });
-    setCachedSongs(prev => {
-      const updated = prev.filter(s => !matchesChannel(s));
-      localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
-      return updated;
-    });
-    setGlobalQueue(prev => prev.filter(s => !matchesChannel(s)));
-    pushToast(`Blocked channel "${channelTitle || channelId}" — it disables embedding, so future songs from them won't be queued.`, 'warn');
+  // Kick off (or resume checking on) a local download for a song, so it can
+  // be played back as a plain file instead of a YouTube embed. Idempotent —
+  // safe to call every time a known-problem song re-enters the queue; the
+  // server no-ops if it's already downloading or already archived.
+  const ensureArchived = (song) => {
+    if (!song?.videoId) return;
+    fetch(`${API_BASE_URL}/archive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ videoId: song.videoId, title: song.title, thumbnail: song.thumbnail, channel: song.channel })
+    }).catch((error) => console.error('Failed to start archiving:', error));
   };
 
   // A song failed to play because its owner disabled embedding (YT error
-  // 101/150). Resolve the channel behind it (search results carry channelId;
-  // older cached songs don't, so fall back to a server lookup) and blacklist it.
-  const handleEmbedBlocked = async (song) => {
+  // 101/150). Start archiving it locally for next time and skip it now —
+  // this exact play attempt already lost its shot at the YouTube embed.
+  const handleEmbedBlocked = (song) => {
     if (!song) return;
-    let channelId = song.channelId;
-    let channelTitle = song.channel;
-    if (!channelId && song.videoId) {
-      try {
-        const response = await fetch(`${API_BASE_URL}/channels/resolve`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ videoId: song.videoId })
-        });
-        const data = await response.json();
-        if (data.success) {
-          channelId = data.channelId;
-          channelTitle = data.channelTitle;
-        }
-      } catch (error) {
-        console.error('Failed to resolve channel for blacklisting:', error);
-      }
-    }
-    if (channelId) {
-      blacklistChannel(channelId, channelTitle, 'Embedding disabled during playback');
-    } else {
-      pushToast(`"${song.title}" won't play, but its channel couldn't be identified to block it.`, 'warn');
-    }
+    ensureArchived(song);
+    pushToast(`"${song.title}" can't stream directly — downloading it for next time. Skipping for now.`, 'warn');
     playNextRef.current();
   };
 
@@ -887,7 +872,6 @@ const KaraokeBarApp = () => {
     const newQueueItems = songOrders.map(songOrder => ({
       id: Date.now() + Math.random(), // Ensure unique ID
       videoId: songOrder.videoId,
-      channelId: songOrder.channelId,
       channel: songOrder.channel,
       url: `https://www.youtube.com/watch?v=${songOrder.videoId}`,
       title: songOrder.item,
@@ -949,16 +933,16 @@ const KaraokeBarApp = () => {
       setGlobalQueue(prev => [...prev, {
         id: Date.now() + Math.random(),
         videoId: searchResult.videoId,
-        channelId: searchResult.channelId,
         channel: searchResult.channel,
         url: `https://www.youtube.com/watch?v=${searchResult.videoId}`,
         title: searchResult.title,
         thumbnail: searchResult.thumbnail,
         guestId,
-        groupName: guestLabel,
+        groupName: guestName || guestLabel,
         addedAt: new Date().toLocaleTimeString()
       }]);
       addSongToCache(searchResult);
+      if (searchResult.archive && searchResult.archive.status !== 'ready') ensureArchived(searchResult);
       pushToast(`Added "${searchResult.title}" to the queue`, 'success');
       return;
     }
@@ -984,7 +968,6 @@ const KaraokeBarApp = () => {
       tableNumber: currentTable,
       category: 'Song',
       videoId: searchResult.videoId,
-      channelId: searchResult.channelId,
       channel: searchResult.channel,
       thumbnail: searchResult.thumbnail,
       availability: searchResult.availability,
@@ -1000,6 +983,7 @@ const KaraokeBarApp = () => {
 
     // Add song to cache for offline search
     addSongToCache(searchResult);
+    if (searchResult.archive && searchResult.archive.status !== 'ready') ensureArchived(searchResult);
     pushToast(`Reserved "${searchResult.title}"`, 'success');
   };
 
@@ -1551,6 +1535,39 @@ const KaraokeBarApp = () => {
         </div>
       )}
 
+      {/* Simple Queue Mode: set your own display name (used in place of "Guest 1234") */}
+      {guestNameEdit != null && (
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setGuestNameEdit(null); }}>
+          <form
+            className="modal-card fade-up"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Set your name"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setGuestName(guestNameEdit.trim());
+              setGuestNameEdit(null);
+              pushToast(guestNameEdit.trim() ? `You're now "${guestNameEdit.trim()}"` : 'Name cleared', 'success');
+            }}
+          >
+            <h3 className="h-display text-lg mb-1">Set Your Name</h3>
+            <p className="muted text-sm mb-4">Shown in the queue instead of "{guestLabel}". Leave blank to use the default.</p>
+            <input
+              className="input"
+              autoFocus
+              placeholder={guestLabel}
+              maxLength={24}
+              value={guestNameEdit}
+              onChange={(e) => setGuestNameEdit(e.target.value)}
+            />
+            <div className="flex justify-end gap-2 mt-5">
+              <button type="button" className="btn btn-ghost" onClick={() => setGuestNameEdit(null)}>Cancel</button>
+              <button type="submit" className="btn btn-primary">Save</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Checkout / split-bill modal */}
       {checkout && (() => {
         const t = tables[checkout.tableNum] || {};
@@ -1793,7 +1810,7 @@ const KaraokeBarApp = () => {
   // TABLE MODE
   if (mode === 'table') {
     const table = tables[currentTable];
-    const groupName = simpleMode ? guestLabel : (table.groupName || `Table of ${table.guestCount}`);
+    const groupName = simpleMode ? (guestName || guestLabel) : (table.groupName || `Table of ${table.guestCount}`);
     const myQueuedCount = globalQueue.filter(s => s.guestId === guestId).length;
     const atSongLimit = simpleMode ? myQueuedCount >= maxSongsPerTable : table.songCount >= maxSongsPerTable;
 
@@ -1809,7 +1826,18 @@ const KaraokeBarApp = () => {
               <span className="brand-dot" />
               <div className="leading-tight">
                 <div className="wordmark text-xl">Can<span className="brand-text">tina</span></div>
-                <div className="label" style={{ marginTop: '2px' }}>{groupName}</div>
+                {simpleMode ? (
+                  <button
+                    className="label"
+                    style={{ marginTop: '2px', cursor: 'pointer', textDecoration: 'underline dotted' }}
+                    onClick={() => setGuestNameEdit(guestName)}
+                    title="Set your name"
+                  >
+                    {groupName}
+                  </button>
+                ) : (
+                  <div className="label" style={{ marginTop: '2px' }}>{groupName}</div>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -1951,6 +1979,8 @@ const KaraokeBarApp = () => {
                         <div className="flex items-center gap-2 mb-1">
                           <h4 className="text-sm sm:text-base font-semibold truncate">{result.title}</h4>
                           {result.isBlocked && <span className="tag tag-danger flex-shrink-0">Restricted</span>}
+                          {result.archive?.status === 'ready' && <span className="tag tag-ok flex-shrink-0">Archived</span>}
+                          {result.archive?.status === 'downloading' && <span className="tag flex-shrink-0">Downloading {result.archive.progress || 0}%</span>}
                         </div>
                         <p className="text-xs dim">{result.channel}</p>
                         {result.isBlocked && <p className="text-xs mt-1" style={{ color: 'var(--danger)' }}>Embedding disabled — can watch on YouTube</p>}
@@ -2226,11 +2256,24 @@ const KaraokeBarApp = () => {
           </div>
         </div>
 
-        {/* Video Player — YouTube IFrame API mounts into the host div; if it
-            can't load (offline/blocked) we fall back to a plain embed. */}
+        {/* Video Player — an archived song plays as a plain local file (no
+            YouTube embed involved at all); otherwise the YouTube IFrame API
+            mounts into the host div, falling back to a plain embed if it
+            can't load (offline/blocked). */}
         {currentSong && isPlaying ? (
           <div className="flex-1 relative">
-            {ytFallback ? (
+            {isLocalPlayback ? (
+              <video
+                key={currentSong.videoId}
+                src={`${SERVER_ORIGIN}/media/${currentSongArchive.file}`}
+                autoPlay
+                muted={isMuted}
+                className="w-full h-full"
+                style={{ objectFit: 'contain', background: '#000' }}
+                onTimeUpdate={(e) => setProgress({ current: e.target.currentTime || 0, duration: e.target.duration || 0 })}
+                onEnded={() => playNextRef.current()}
+              />
+            ) : ytFallback ? (
               <iframe
                 key={currentSong.videoId}
                 title="Karaoke video"
@@ -2245,11 +2288,11 @@ const KaraokeBarApp = () => {
             ) : (
               <div ref={ytHostRef} className="w-full h-full" />
             )}
-            {/* Now-playing progress (live only when the API is driving playback) */}
+            {/* Now-playing progress (live whenever something is actually driving playback) */}
             <div className="absolute bottom-0 left-0 right-0 z-10 px-6 py-4" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.7), transparent)' }}>
               <div className="flex items-center gap-3 text-white">
                 <Play className="w-4 h-4 flex-shrink-0" />
-                {ytFallback ? (
+                {ytFallback && !isLocalPlayback ? (
                   <span className="text-sm flex-1">Now playing — {currentSong.title}</span>
                 ) : (
                   <>
@@ -3415,37 +3458,48 @@ const KaraokeBarApp = () => {
                 </button>
               </div>
 
-              {/* Blacklisted Channels */}
-              <div className="panel p-5">
-                <div className="flex items-center gap-2 mb-1">
-                  <AlertTriangle className="w-5 h-5" style={{ color: 'var(--brand)' }} />
-                  <h4 className="h-display text-lg">Blacklisted Channels</h4>
-                  <span className="tag">{blacklistedChannels.length}</span>
-                </div>
-                <p className="text-sm dim mb-4">
-                  Channels that disable embedded playback get added here automatically when a song from them fails on the TV. Their videos are filtered out of search and purged from the queue/cache.
-                </p>
-                {blacklistedChannels.length === 0 ? (
-                  <p className="dim text-sm">No channels blocked yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {blacklistedChannels.map(c => (
-                      <div key={c.channelId} className="subpanel p-3 flex items-center justify-between gap-3">
-                        <div>
-                          <div className="font-semibold text-sm">{c.channelTitle}</div>
-                          <div className="dim text-xs">{c.reason} · {new Date(c.blacklistedAt).toLocaleDateString()}</div>
-                        </div>
-                        <button
-                          className="btn btn-sm btn-ghost"
-                          onClick={() => setBlacklistedChannels(prev => prev.filter(x => x.channelId !== c.channelId))}
-                        >
-                          Unblock
-                        </button>
+              {/* Archived Songs */}
+              {(() => {
+                const archivedSongs = cachedSongs.filter(s => s.archive);
+                return (
+                  <div className="panel p-5">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Database className="w-5 h-5" style={{ color: 'var(--brand)' }} />
+                      <h4 className="h-display text-lg">Archived Songs</h4>
+                      <span className="tag">{archivedSongs.length}</span>
+                    </div>
+                    <p className="text-sm dim mb-4">
+                      When a song fails to embed on the TV, it gets downloaded here automatically and plays back as a local file from then on — no more "Video unavailable."
+                    </p>
+                    {archivedSongs.length === 0 ? (
+                      <p className="dim text-sm">No songs have needed archiving yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {archivedSongs.map(s => (
+                          <div key={s.videoId} className="subpanel p-3 flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="font-semibold text-sm truncate">{s.title}</div>
+                              <div className="dim text-xs">
+                                {s.archive.status === 'downloading' && `Downloading… ${s.archive.progress || 0}%`}
+                                {s.archive.status === 'ready' && 'Ready — playing locally'}
+                                {s.archive.status === 'failed' && `Failed: ${s.archive.reason || 'unknown error'}`}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              {s.archive.status === 'failed' && (
+                                <button className="btn btn-sm btn-ghost" onClick={() => ensureArchived(s)}>Retry</button>
+                              )}
+                              <span className={`tag ${s.archive.status === 'ready' ? 'tag-ok' : s.archive.status === 'failed' ? 'tag-danger' : ''}`}>
+                                {s.archive.status}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </div>
           )}
 
