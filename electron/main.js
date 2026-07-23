@@ -12,10 +12,12 @@ let tvWindow = null;
 // Must run before any app.getPath() call.
 app.setName('Cantina');
 
-// 1. Writable data dir — a packaged app cannot write inside its install dir.
+// 1. Writable data dir — a packaged app cannot write inside its install dir
+// (server/archiver.js's default media dir sits inside the read-only asar).
 const userDataDir = app.getPath('userData');
 fs.mkdirSync(userDataDir, { recursive: true });
 process.env.CANTINA_STATE_FILE = path.join(userDataDir, 'state.json');
+process.env.CANTINA_MEDIA_DIR = path.join(userDataDir, 'media');
 
 // 2. Baked-in YouTube key: load the bundled .env (repo root in dev,
 //    process.resourcesPath when packaged) before the server reads it.
