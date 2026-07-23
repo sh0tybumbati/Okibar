@@ -897,7 +897,17 @@ const KaraokeBarApp = () => {
       price: songOrder.price
     }));
 
-    setGlobalQueue(prev => [...prev, ...newQueueItems]);
+    // Nothing playing — start the first confirmed song immediately instead
+    // of leaving it queued until someone presses play on the TV/console.
+    if (!currentSong && newQueueItems.length > 0) {
+      const [first, ...rest] = newQueueItems;
+      setCurrentSong(first);
+      setCurrentSongStartedAt(Date.now());
+      setIsPlaying(true);
+      setGlobalQueue(prev => [...prev, ...rest]);
+    } else {
+      setGlobalQueue(prev => [...prev, ...newQueueItems]);
+    }
 
     // Move pending orders to confirmed orders
     setTables(prev => ({
@@ -945,7 +955,7 @@ const KaraokeBarApp = () => {
         pushToast(`You've reached the ${maxSongsPerTable}-song limit.`, 'warn');
         return;
       }
-      setGlobalQueue(prev => [...prev, {
+      const newSong = {
         id: Date.now() + Math.random(),
         videoId: searchResult.videoId,
         channel: searchResult.channel,
@@ -955,13 +965,22 @@ const KaraokeBarApp = () => {
         guestId,
         groupName: guestName || guestLabel,
         addedAt: new Date().toLocaleTimeString()
-      }]);
+      };
+      if (!currentSong) {
+        // Nothing playing — start it immediately instead of leaving it
+        // queued until someone walks over to press play.
+        setCurrentSong(newSong);
+        setCurrentSongStartedAt(Date.now());
+        setIsPlaying(true);
+      } else {
+        setGlobalQueue(prev => [...prev, newSong]);
+      }
       addSongToCache(searchResult);
       // Archive every queued song up front, win or lose on streaming — by
       // the time it reaches the front of the queue it's already local, so
       // nothing ever needs to be skipped-and-requeued to "try again."
       if (searchResult.archive?.status !== 'ready') ensureArchived(searchResult);
-      pushToast(`Added "${searchResult.title}" to the queue`, 'success');
+      pushToast(currentSong ? `Added "${searchResult.title}" to the queue` : `"${searchResult.title}" is starting now`, 'success');
       return;
     }
 
@@ -1010,10 +1029,14 @@ const KaraokeBarApp = () => {
   // Play next song
   const playNext = () => {
     if (globalQueue.length > 0) {
-      setCurrentSong(globalQueue[0]);
+      const next = globalQueue[0];
+      setCurrentSong(next);
       setCurrentSongStartedAt(Date.now());
       setIsPlaying(true);
       setGlobalQueue(prev => prev.slice(1));
+      // Safety net: guarantee the song about to play is being archived, even
+      // if the original queue-time trigger never landed for some reason.
+      ensureArchived(next);
     } else {
       setCurrentSong(null);
       setCurrentSongStartedAt(null);

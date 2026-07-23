@@ -10,8 +10,6 @@ const path = require('path');
 const MEDIA_DIR = process.env.CANTINA_MEDIA_DIR || path.join(__dirname, 'media');
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
-const YT_DLP_BIN = process.env.CANTINA_YTDLP_PATH || 'yt-dlp';
-
 // yt-dlp leaves .part/.ytdl siblings while downloading — only a file with
 // none of those suffixes is actually finished and safe to serve.
 const isPartialFile = (name) => /\.(part|ytdl|part-Frag\d+)$/i.test(name);
@@ -24,16 +22,35 @@ const findArchivedFile = (videoId) => {
 
 const isArchived = (videoId) => findArchivedFile(videoId) !== null;
 
+// A double-clicked/launcher-started desktop app on Linux typically does NOT
+// inherit the shell's PATH (no .bashrc/.profile sourcing), so a bare
+// spawn('yt-dlp', ...) can silently fail to find a pip/pipx-installed
+// binary that works fine from a terminal. Check common install locations
+// explicitly before falling back to a plain PATH lookup.
+let ytDlpBin = null; // resolved absolute path, or 'yt-dlp' to rely on PATH
+const resolveYtDlpBin = () => {
+  if (ytDlpBin) return ytDlpBin;
+  if (process.env.CANTINA_YTDLP_PATH) return (ytDlpBin = process.env.CANTINA_YTDLP_PATH);
+  const candidates = [
+    path.join(require('os').homedir(), '.local', 'bin', 'yt-dlp'),
+    '/usr/local/bin/yt-dlp',
+    '/opt/homebrew/bin/yt-dlp',
+    '/usr/bin/yt-dlp'
+  ];
+  const found = candidates.find(p => { try { return fs.existsSync(p); } catch (_) { return false; } });
+  return (ytDlpBin = found || 'yt-dlp');
+};
+
 let ytDlpAvailable = null; // cached after first check
 const checkYtDlpAvailable = () => new Promise((resolve) => {
   if (ytDlpAvailable !== null) return resolve(ytDlpAvailable);
-  execFile(YT_DLP_BIN, ['--version'], (error) => {
+  execFile(resolveYtDlpBin(), ['--version'], (error) => {
     ytDlpAvailable = !error;
     if (!ytDlpAvailable) {
-      console.warn('⚠️  yt-dlp not found — local archiving of embed-blocked songs is disabled.');
-      console.warn('📖 Install it: https://github.com/yt-dlp/yt-dlp#installation');
+      console.warn(`⚠️  yt-dlp not found (looked for "${resolveYtDlpBin()}") — local archiving of embed-blocked songs is disabled.`);
+      console.warn('📖 Install it, or set CANTINA_YTDLP_PATH: https://github.com/yt-dlp/yt-dlp#installation');
     } else {
-      console.log('🎬 yt-dlp found — songs that fail to embed will be archived locally.');
+      console.log(`🎬 yt-dlp found at "${resolveYtDlpBin()}" — queued songs will be archived locally.`);
     }
     resolve(ytDlpAvailable);
   });
@@ -85,7 +102,7 @@ const archiveVideo = (videoId, { onProgress } = {}) => {
           '-o', path.join(MEDIA_DIR, `${videoId}.%(ext)s`),
           `https://www.youtube.com/watch?v=${videoId}`
         ];
-        const proc = spawn(YT_DLP_BIN, args);
+        const proc = spawn(resolveYtDlpBin(), args);
         let lastErr = '';
 
         proc.stdout.on('data', (chunk) => {
