@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, SkipForward, Trash2, GripVertical, Monitor, Smartphone, Volume2, VolumeX, Search, Clock, Users, Settings, QrCode, CheckCircle, Edit3, Plus, Database, X, RefreshCw, ExternalLink, AlertTriangle, Palette, Check, Music2, Mic2, DollarSign, UserPlus, Maximize2 } from 'lucide-react';
+import { Play, Pause, SkipForward, Trash2, GripVertical, Monitor, Smartphone, Search, Clock, Users, Settings, QrCode, CheckCircle, Edit3, Plus, Database, X, RefreshCw, ExternalLink, AlertTriangle, Palette, Check, Music2, Mic2, DollarSign, UserPlus, Maximize2 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import apiService, { API_BASE_URL, SERVER_ORIGIN } from '../services/api';
 import socket from '../services/socket';
@@ -132,7 +132,9 @@ const KaraokeBarApp = () => {
   // Simple Queue Mode: strips ordering/tables/floor/billing down to just the
   // karaoke queue, for venues (or events) that don't need the bar features.
   const [simpleMode, setSimpleMode] = useState(false);
-  
+  // Corner the TV's join QR code sits in — 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'.
+  const [qrPosition, setQrPosition] = useState('bottom-left');
+
   // Search functionality
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -463,6 +465,18 @@ const KaraokeBarApp = () => {
     } catch (_) {}
   };
 
+  // Corner placement for the TV's join QR code — configurable in Settings.
+  // Top corners are pushed below the top bar's controls; "Now Singing"
+  // (bottom-left) swaps to bottom-right when the QR claims bottom-left, so
+  // the two never sit on top of each other.
+  const qrCornerStyle = (position) => {
+    const base = { position: 'absolute', zIndex: 15 };
+    if (position === 'top-left') return { ...base, top: '5.5rem', left: '1rem' };
+    if (position === 'top-right') return { ...base, top: '5.5rem', right: '1rem' };
+    if (position === 'bottom-right') return { ...base, bottom: '1rem', right: '1rem' };
+    return { ...base, bottom: '1rem', left: '1rem' };
+  };
+
   // If this song already has a local copy, play that instead of touching
   // YouTube's embed at all — sidesteps "embedding disabled" completely
   // rather than just reacting to it after the fact.
@@ -569,6 +583,7 @@ const KaraokeBarApp = () => {
     theme: [theme, setTheme],
     staffPin: [staffPin, setStaffPin],
     simpleMode: [simpleMode, setSimpleMode],
+    qrPosition: [qrPosition, setQrPosition],
     currentSongStartedAt: [currentSongStartedAt, setCurrentSongStartedAt]
   };
   const syncedStateRef = useRef(syncedState);
@@ -942,7 +957,10 @@ const KaraokeBarApp = () => {
         addedAt: new Date().toLocaleTimeString()
       }]);
       addSongToCache(searchResult);
-      if (searchResult.archive && searchResult.archive.status !== 'ready') ensureArchived(searchResult);
+      // Archive every queued song up front, win or lose on streaming — by
+      // the time it reaches the front of the queue it's already local, so
+      // nothing ever needs to be skipped-and-requeued to "try again."
+      if (searchResult.archive?.status !== 'ready') ensureArchived(searchResult);
       pushToast(`Added "${searchResult.title}" to the queue`, 'success');
       return;
     }
@@ -983,7 +1001,9 @@ const KaraokeBarApp = () => {
 
     // Add song to cache for offline search
     addSongToCache(searchResult);
-    if (searchResult.archive && searchResult.archive.status !== 'ready') ensureArchived(searchResult);
+    // Archive every queued song up front, win or lose on streaming — by the
+    // time it reaches the front of the queue it's already local.
+    if (searchResult.archive?.status !== 'ready') ensureArchived(searchResult);
     pushToast(`Reserved "${searchResult.title}"`, 'success');
   };
 
@@ -2217,8 +2237,20 @@ const KaraokeBarApp = () => {
     return (
       <div className="w-full h-screen flex flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
         {overlays}
+
+        {/* Fullscreen — pinned to the very top-left corner, out of the way */}
+        <button
+          onClick={toggleFullscreen}
+          className="icon-btn"
+          style={{ position: 'absolute', top: '0.75rem', left: '0.75rem', zIndex: 20, width: '1.75rem', height: '1.75rem', padding: 0 }}
+          title="Toggle fullscreen"
+          aria-label="Toggle fullscreen"
+        >
+          <Maximize2 className="w-3.5 h-3.5" />
+        </button>
+
         {/* Top Bar */}
-        <div className="absolute top-5 left-5 right-5 z-10 flex justify-between items-center gap-3">
+        <div className="absolute top-5 z-10 flex justify-between items-center gap-3" style={{ left: '3rem', right: '1.25rem' }}>
           {/* Next Song Info */}
           {globalQueue.length > 0 ? (
             <div className="panel px-4 py-2.5 flex items-center gap-3">
@@ -2231,27 +2263,20 @@ const KaraokeBarApp = () => {
             </div>
           ) : <span />}
 
-          {/* Controls */}
+          {/* Sync status (plain dot) + staff device-switch, kept minimal */}
           <div className="flex items-center gap-2">
-            {connDot}
-            {currentSong && (
-              <button
-                onClick={() => window.open(`https://www.youtube.com/watch?v=${currentSong.videoId}`, '_blank')}
-                className="icon-btn"
-                title="Open in YouTube (Fullscreen)"
-                aria-label="Open in YouTube"
-              >
-                <ExternalLink className="w-5 h-5" />
-              </button>
-            )}
-            <button onClick={() => setIsMuted(!isMuted)} className="icon-btn" title={isMuted ? 'Unmute' : 'Mute'} aria-label={isMuted ? 'Unmute' : 'Mute'}>
-              {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
-            </button>
-            <button onClick={toggleFullscreen} className="icon-btn" title="Toggle fullscreen" aria-label="Toggle fullscreen">
-              <Maximize2 className="w-5 h-5" />
-            </button>
-            <button onClick={() => requireStaff(() => setMode(null))} className="icon-btn" title="Staff — change device role" aria-label="Staff — change device role">
-              <Smartphone className="w-5 h-5" />
+            <span
+              className={`conn-dot ${connStatus === 'connected' ? 'is-on' : 'is-off'}`}
+              title={connStatus === 'connected' ? 'Live-synced' : 'Reconnecting…'}
+            />
+            <button
+              onClick={() => requireStaff(() => setMode(null))}
+              className="icon-btn"
+              style={{ width: '1.75rem', height: '1.75rem', padding: 0 }}
+              title="Staff — change device role"
+              aria-label="Staff — change device role"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
@@ -2336,24 +2361,22 @@ const KaraokeBarApp = () => {
           </div>
         )}
 
-        {/* Current Singer Info */}
+        {/* Current Singer Info — swaps to the right when the QR code is
+            claiming bottom-left, so they never overlap. */}
         {currentSong && (
-          <div className="absolute bottom-5 left-5 panel px-5 py-3">
+          <div className={`absolute bottom-5 panel px-5 py-3 ${simpleMode && qrPosition === 'bottom-left' ? 'right-5' : 'left-5'}`}>
             <div className="h-display text-lg">{currentSong.groupName}</div>
             <div className="label">Now Singing</div>
           </div>
         )}
 
         {/* Simple Queue Mode: no tables to walk up to, so the join link lives
-            here — scan to queue a song from your own phone. */}
+            here — scan to queue a song from your own phone. Just the code,
+            kept small and unobtrusive; corner is configurable in Settings. */}
         {simpleMode && (
-          <div className="absolute bottom-5 right-5 panel p-3 flex items-center gap-3">
-            <div className="qr-box" style={{ padding: '0.4rem' }}>
-              <QRCodeSVG value={joinUrl()} size={88} bgColor="#ffffff" fgColor="#0a0e17" level="M" includeMargin={false} />
-            </div>
-            <div className="leading-tight">
-              <div className="label">Scan to Join</div>
-              <div className="text-sm font-semibold">Queue a song</div>
+          <div style={{ ...qrCornerStyle(qrPosition), opacity: 0.6 }}>
+            <div className="qr-box" style={{ padding: '0.25rem' }}>
+              <QRCodeSVG value={joinUrl()} size={52} bgColor="#ffffff" fgColor="#0a0e17" level="M" includeMargin={false} />
             </div>
           </div>
         )}
@@ -3456,6 +3479,26 @@ const KaraokeBarApp = () => {
                 >
                   {simpleMode ? 'Turn off' : 'Turn on'}
                 </button>
+
+                <div className="divide-line pt-4 mt-4">
+                  <label className="label block mb-2">TV QR Code Corner</label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: 'top-left', label: 'Top Left' },
+                      { id: 'top-right', label: 'Top Right' },
+                      { id: 'bottom-left', label: 'Bottom Left' },
+                      { id: 'bottom-right', label: 'Bottom Right' }
+                    ].map(opt => (
+                      <button
+                        key={opt.id}
+                        className={`seg-btn ${qrPosition === opt.id ? 'is-active' : ''}`}
+                        onClick={() => setQrPosition(opt.id)}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               {/* Archived Songs */}

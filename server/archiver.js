@@ -41,6 +41,26 @@ const checkYtDlpAvailable = () => new Promise((resolve) => {
 
 const inFlight = new Map(); // videoId -> Promise<{success, file?, reason?}>
 
+// Every queued song gets archived now (not just ones that already failed),
+// so a full night's queue can dump a burst of downloads on the server at
+// once. Cap how many yt-dlp processes run at a time so that doesn't choke
+// the machine's CPU/bandwidth while a song is actually trying to play.
+const MAX_CONCURRENT_DOWNLOADS = 2;
+let activeDownloads = 0;
+const pendingStarts = [];
+
+const runNextPending = () => {
+  if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS || pendingStarts.length === 0) return;
+  activeDownloads++;
+  const start = pendingStarts.shift();
+  start();
+};
+
+const releaseDownloadSlot = () => {
+  activeDownloads--;
+  runNextPending();
+};
+
 // Downloads a video for local playback, capped at 480p — plenty for a TV
 // screen, keeps downloads fast and storage reasonable for a bar running
 // this over weeks/months.
@@ -52,44 +72,50 @@ const archiveVideo = (videoId, { onProgress } = {}) => {
   const promise = (async () => {
     const available = await checkYtDlpAvailable();
     if (!available) {
+      inFlight.delete(videoId);
       return { success: false, reason: 'yt-dlp is not installed on this machine' };
     }
 
     return new Promise((resolve) => {
-      const args = [
-        '-f', 'best[height<=480][ext=mp4]/best[height<=480]/best',
-        '--no-playlist',
-        '--newline',
-        '-o', path.join(MEDIA_DIR, `${videoId}.%(ext)s`),
-        `https://www.youtube.com/watch?v=${videoId}`
-      ];
-      const proc = spawn(YT_DLP_BIN, args);
-      let lastErr = '';
+      pendingStarts.push(() => {
+        const args = [
+          '-f', 'best[height<=480][ext=mp4]/best[height<=480]/best',
+          '--no-playlist',
+          '--newline',
+          '-o', path.join(MEDIA_DIR, `${videoId}.%(ext)s`),
+          `https://www.youtube.com/watch?v=${videoId}`
+        ];
+        const proc = spawn(YT_DLP_BIN, args);
+        let lastErr = '';
 
-      proc.stdout.on('data', (chunk) => {
-        const text = chunk.toString();
-        const match = text.match(/\[download\]\s+([\d.]+)% of/);
-        if (match && onProgress) onProgress(Math.min(99, Math.round(parseFloat(match[1]))));
-      });
-      proc.stderr.on('data', (chunk) => { lastErr += chunk.toString(); });
+        proc.stdout.on('data', (chunk) => {
+          const text = chunk.toString();
+          const match = text.match(/\[download\]\s+([\d.]+)% of/);
+          if (match && onProgress) onProgress(Math.min(99, Math.round(parseFloat(match[1]))));
+        });
+        proc.stderr.on('data', (chunk) => { lastErr += chunk.toString(); });
 
-      proc.on('close', (code) => {
-        inFlight.delete(videoId);
-        const file = findArchivedFile(videoId);
-        if (code !== 0 || !file) {
-          console.error(`❌ Archive failed for ${videoId} (exit ${code}):`, lastErr.trim().slice(-500));
-          resolve({ success: false, reason: 'Download failed' });
-          return;
-        }
-        console.log(`✅ Archived ${videoId} -> ${file}`);
-        resolve({ success: true, file });
-      });
+        proc.on('close', (code) => {
+          inFlight.delete(videoId);
+          releaseDownloadSlot();
+          const file = findArchivedFile(videoId);
+          if (code !== 0 || !file) {
+            console.error(`❌ Archive failed for ${videoId} (exit ${code}):`, lastErr.trim().slice(-500));
+            resolve({ success: false, reason: 'Download failed' });
+            return;
+          }
+          console.log(`✅ Archived ${videoId} -> ${file}`);
+          resolve({ success: true, file });
+        });
 
-      proc.on('error', (err) => {
-        inFlight.delete(videoId);
-        console.error(`❌ Failed to launch yt-dlp for ${videoId}:`, err.message);
-        resolve({ success: false, reason: err.message });
+        proc.on('error', (err) => {
+          inFlight.delete(videoId);
+          releaseDownloadSlot();
+          console.error(`❌ Failed to launch yt-dlp for ${videoId}:`, err.message);
+          resolve({ success: false, reason: err.message });
+        });
       });
+      runNextPending();
     });
   })();
 
