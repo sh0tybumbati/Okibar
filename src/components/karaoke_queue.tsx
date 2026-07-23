@@ -134,6 +134,9 @@ const KaraokeBarApp = () => {
   const [simpleMode, setSimpleMode] = useState(false);
   // Corner the TV's join QR code sits in — 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'.
   const [qrPosition, setQrPosition] = useState('bottom-left');
+  // Party mode: when on, any guest can drag-reorder the whole shared queue
+  // from their own phone, not just their own songs.
+  const [guestsCanReorder, setGuestsCanReorder] = useState(false);
 
   // Search functionality
   const [searchQuery, setSearchQuery] = useState('');
@@ -563,6 +566,41 @@ const KaraokeBarApp = () => {
     });
   };
 
+  // --- QUEUE DRAG-REORDER (guests, Party Mode) ---
+  // Pointer Events unify mouse/touch/pen into one event set, unlike the
+  // HTML5 Drag and Drop API the Bar Console uses above — iOS Safari doesn't
+  // support HTML5 DnD via touch at all, so guests dragging from their phones
+  // need this instead.
+  const [queueDrag, setQueueDrag] = useState(null); // { index, overIndex }
+
+  const queueRowIndexAtPoint = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    const row = el && el.closest('[data-queue-row]');
+    if (!row) return null;
+    const idx = parseInt(row.dataset.queueRow, 10);
+    return Number.isNaN(idx) ? null : idx;
+  };
+
+  const startQueueDrag = (e, index) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setQueueDrag({ index, overIndex: index });
+  };
+
+  const moveQueueDrag = (e) => {
+    if (!queueDrag) return;
+    const overIndex = queueRowIndexAtPoint(e.clientX, e.clientY);
+    if (overIndex !== null && overIndex !== queueDrag.overIndex) {
+      setQueueDrag(prev => (prev ? { ...prev, overIndex } : prev));
+    }
+  };
+
+  const endQueueDrag = () => {
+    if (queueDrag && queueDrag.index !== queueDrag.overIndex) {
+      reorderQueue(queueDrag.index, queueDrag.overIndex);
+    }
+    setQueueDrag(null);
+  };
+
   // --- CROSS-DEVICE STATE SYNC ---
   // Every entry here is mirrored to the server and broadcast to all other
   // devices (tables, TV, bar). Per-device UI state (mode, current table,
@@ -584,6 +622,7 @@ const KaraokeBarApp = () => {
     staffPin: [staffPin, setStaffPin],
     simpleMode: [simpleMode, setSimpleMode],
     qrPosition: [qrPosition, setQrPosition],
+    guestsCanReorder: [guestsCanReorder, setGuestsCanReorder],
     currentSongStartedAt: [currentSongStartedAt, setCurrentSongStartedAt]
   };
   const syncedStateRef = useRef(syncedState);
@@ -665,13 +704,25 @@ const KaraokeBarApp = () => {
   };
 
   // A song failed to play because its owner disabled embedding (YT error
-  // 101/150). Start archiving it locally for next time and skip it now —
-  // this exact play attempt already lost its shot at the YouTube embed.
+  // 101/150) and it isn't archived yet. Rather than dropping it (forcing
+  // someone to re-search and re-add it later), send it to the back of the
+  // queue — it'll get another shot once its download finishes.
   const handleEmbedBlocked = (song) => {
     if (!song) return;
     ensureArchived(song);
-    pushToast(`"${song.title}" can't stream directly — downloading it for next time. Skipping for now.`, 'warn');
-    playNextRef.current();
+    pushToast(`"${song.title}" isn't archived yet — moving it to the back of the queue while it downloads.`, 'warn');
+    setGlobalQueue(prev => [...prev, song]);
+    if (globalQueue.length > 0) {
+      // Something else was already queued behind it — play that now.
+      playNextRef.current();
+    } else {
+      // It was the only thing around; go idle instead of instantly
+      // retrying the same not-yet-archived song. The idle auto-advance
+      // watcher picks it back up once its archive is actually ready.
+      setCurrentSong(null);
+      setCurrentSongStartedAt(null);
+      setIsPlaying(false);
+    }
   };
 
   // Search cached songs by query
@@ -1065,6 +1116,21 @@ const KaraokeBarApp = () => {
   };
   // Keep a stable ref so the player/keyboard effects always call the latest playNext
   playNextRef.current = playNext;
+
+  // Idle auto-advance (TV only, avoids a dual-trigger race with Bar Console):
+  // whenever nothing is playing and something's queued, start it — unless
+  // the front song is a known problem case still mid-download, in which
+  // case retrying it immediately would just fail again in a tight loop.
+  // This also resumes playback automatically once that download finishes.
+  useEffect(() => {
+    if (mode !== 'tv') return;
+    if (currentSong || isPlaying) return;
+    if (globalQueue.length === 0) return;
+    const front = globalQueue[0];
+    const frontArchive = cachedSongs.find(s => s.videoId === front.videoId)?.archive;
+    if (frontArchive && frontArchive.status === 'downloading') return;
+    playNextRef.current();
+  }, [mode, currentSong, isPlaying, globalQueue, cachedSongs]);
 
   // Update table list
   const updateTables = (newTableList) => {
@@ -2103,8 +2169,33 @@ const KaraokeBarApp = () => {
                 <p className="dim text-sm">Nothing queued yet — search above to add a song.</p>
               ) : (
                 <div className="space-y-2">
+                  {guestsCanReorder && globalQueue.length > 1 && (
+                    <p className="dim text-xs mb-1">🎉 Party Mode — drag ⠿ to reorder</p>
+                  )}
                   {globalQueue.map((song, index) => (
-                    <div key={song.id} className="row flex items-center gap-3 p-3">
+                    <div
+                      key={song.id}
+                      data-queue-row={index}
+                      className="row flex items-center gap-3 p-3"
+                      style={{
+                        opacity: queueDrag?.index === index ? 0.5 : 1,
+                        borderTop: queueDrag && queueDrag.overIndex === index && queueDrag.index !== index ? '2px solid var(--brand)' : undefined
+                      }}
+                    >
+                      {guestsCanReorder && (
+                        <span
+                          className="dim cursor-grab active:cursor-grabbing flex-shrink-0"
+                          style={{ touchAction: 'none' }}
+                          onPointerDown={(e) => startQueueDrag(e, index)}
+                          onPointerMove={moveQueueDrag}
+                          onPointerUp={endQueueDrag}
+                          onPointerCancel={endQueueDrag}
+                          title="Drag to reorder"
+                          aria-label="Drag to reorder"
+                        >
+                          <GripVertical className="w-4 h-4" />
+                        </span>
+                      )}
                       <span className="dim text-xs w-4 flex-shrink-0">{index + 1}</span>
                       <img src={song.thumbnail} alt={song.title} className="w-12 h-9 object-cover rounded flex-shrink-0" />
                       <div className="flex-1 min-w-0">
@@ -3521,6 +3612,22 @@ const KaraokeBarApp = () => {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                <div className="divide-line pt-4 mt-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <label className="label">Party Mode — Anyone Can Reorder</label>
+                    <span className={`tag ${guestsCanReorder ? 'tag-ok' : ''}`}>{guestsCanReorder ? 'On' : 'Off'}</span>
+                  </div>
+                  <p className="text-sm dim mb-3">
+                    Lets any guest drag-reorder the whole shared queue from their own phone, not just their own songs. Good for parties; turn off if you want the running order to stay put.
+                  </p>
+                  <button
+                    className={`btn btn-sm ${guestsCanReorder ? 'btn-danger' : 'btn-primary'}`}
+                    onClick={() => setGuestsCanReorder(!guestsCanReorder)}
+                  >
+                    {guestsCanReorder ? 'Turn off' : 'Turn on'}
+                  </button>
                 </div>
               </div>
 
