@@ -58,6 +58,21 @@ const KaraokeBarApp = () => {
     const raw = url.get('table') || localStorage.getItem('cantina-device-table') || '1';
     return parseInt(raw, 10) || 1;
   });
+  // Simple Queue Mode has no tables — each device is its own guest, identified
+  // by a random id that persists across reloads but never crosses devices.
+  const [guestId] = useState(() => {
+    try {
+      let id = localStorage.getItem('cantina-guest-id');
+      if (!id) {
+        id = 'g' + Math.random().toString(36).slice(2, 8);
+        localStorage.setItem('cantina-guest-id', id);
+      }
+      return id;
+    } catch (_) {
+      return 'g' + Math.random().toString(36).slice(2, 8);
+    }
+  });
+  const guestLabel = `Guest ${(parseInt(guestId.slice(1), 36) % 9000) + 1000}`;
   const [tablePage, setTablePage] = useState('karaoke'); // 'karaoke', 'menu'
   const [barPage, setBarPage] = useState('queue'); // 'queue', 'orders', 'guests'
   const [showTableManager, setShowTableManager] = useState(false);
@@ -99,8 +114,18 @@ const KaraokeBarApp = () => {
   // Song queue and playback
   const [globalQueue, setGlobalQueue] = useState([]);
   const [currentSong, setCurrentSong] = useState(null);
+  // When the current song started — drives the table's "Start Over" window
+  // and, since the TV player effect keys off it, re-triggers a fresh mount
+  // (i.e. an actual restart) when a table taps Start Over on the same song.
+  const [currentSongStartedAt, setCurrentSongStartedAt] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  // Channels blacklisted after a song errored with "embedding disabled" —
+  // future search results and cached/queued songs from them are filtered out.
+  const [blacklistedChannels, setBlacklistedChannels] = useState([]);
+  // Simple Queue Mode: strips ordering/tables/floor/billing down to just the
+  // karaoke queue, for venues (or events) that don't need the bar features.
+  const [simpleMode, setSimpleMode] = useState(false);
   
   // Search functionality
   const [searchQuery, setSearchQuery] = useState('');
@@ -385,6 +410,15 @@ const KaraokeBarApp = () => {
     };
   }, [mode]);
 
+  // Ticks once a second on table devices so the "Start Over" window (visible
+  // for the first 15s of a table's own song) expires without needing a click.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (mode !== 'table') return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [mode]);
+
   // Table devices: after a couple minutes idle, return to the karaoke home and
   // clear any lingering search so the next guest gets a clean screen.
   useEffect(() => {
@@ -403,6 +437,17 @@ const KaraokeBarApp = () => {
     reset();
     return () => { clearTimeout(timer); events.forEach(ev => window.removeEventListener(ev, reset)); };
   }, [mode]);
+
+  // Simple Queue Mode hides the ordering/venue tabs — if a Bar Console was
+  // sitting on one of them when another device flipped the mode on, bounce
+  // it back to Queue rather than leaving it stranded with no way to navigate.
+  const barOnlyPages = ['orders', 'guests', 'floor', 'tables', 'menu', 'history', 'tabs'];
+  useEffect(() => {
+    if (simpleMode && barOnlyPages.includes(barPage)) setBarPage('queue');
+  }, [simpleMode, barPage]);
+  useEffect(() => {
+    if (simpleMode && tablePage === 'menu') setTablePage('karaoke');
+  }, [simpleMode, tablePage]);
 
   const toggleFullscreen = () => {
     try {
@@ -441,7 +486,16 @@ const KaraokeBarApp = () => {
         playerVars: { autoplay: 1, mute: isMuted ? 1 : 0, rel: 0, modestbranding: 1, playsinline: 1 },
         events: {
           onReady: (e) => { clearTimeout(fallbackTimer); try { e.target.playVideo(); } catch (_) {} },
-          onError: () => setYtFallback(true),
+          onError: (e) => {
+            // 101/150 = the video owner disabled embedded playback. Don't
+            // bother falling back to a raw iframe — it'll show the same
+            // "Video unavailable" screen. Blacklist the channel and skip.
+            if (e?.data === 101 || e?.data === 150) {
+              handleEmbedBlocked(currentSong);
+            } else {
+              setYtFallback(true);
+            }
+          },
           onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) playNextRef.current(); }
         }
       });
@@ -462,7 +516,7 @@ const KaraokeBarApp = () => {
       try { if (ytHostRef.current) ytHostRef.current.innerHTML = ''; } catch (_) {}
       ytPlayerRef.current = null;
     };
-  }, [mode, currentSong?.videoId, isPlaying]);
+  }, [mode, currentSong?.videoId, isPlaying, currentSongStartedAt]);
 
   // Toggle mute on the live player without rebuilding it
   useEffect(() => {
@@ -499,7 +553,10 @@ const KaraokeBarApp = () => {
     maxSongsPerTable: [maxSongsPerTable, setMaxSongsPerTable],
     currency: [currency, setCurrency],
     theme: [theme, setTheme],
-    staffPin: [staffPin, setStaffPin]
+    staffPin: [staffPin, setStaffPin],
+    blacklistedChannels: [blacklistedChannels, setBlacklistedChannels],
+    simpleMode: [simpleMode, setSimpleMode],
+    currentSongStartedAt: [currentSongStartedAt, setCurrentSongStartedAt]
   };
   const syncedStateRef = useRef(syncedState);
   syncedStateRef.current = syncedState;
@@ -565,7 +622,58 @@ const KaraokeBarApp = () => {
       return updated;
     });
   };
-  
+
+  // Blacklist an entire channel (it disables embedding) — drops it from the
+  // cache and the live queue, and future /api/search results exclude it too.
+  const blacklistChannel = (channelId, channelTitle, reason) => {
+    const matchesChannel = (song) =>
+      song.channelId === channelId ||
+      (!song.channelId && channelTitle && (song.channel || '').toLowerCase() === channelTitle.toLowerCase());
+
+    setBlacklistedChannels(prev => {
+      if (prev.some(c => c.channelId === channelId)) return prev;
+      return [...prev, { channelId, channelTitle: channelTitle || 'Unknown channel', reason, blacklistedAt: new Date().toISOString() }];
+    });
+    setCachedSongs(prev => {
+      const updated = prev.filter(s => !matchesChannel(s));
+      localStorage.setItem('cantina-cached-songs', JSON.stringify(updated));
+      return updated;
+    });
+    setGlobalQueue(prev => prev.filter(s => !matchesChannel(s)));
+    pushToast(`Blocked channel "${channelTitle || channelId}" — it disables embedding, so future songs from them won't be queued.`, 'warn');
+  };
+
+  // A song failed to play because its owner disabled embedding (YT error
+  // 101/150). Resolve the channel behind it (search results carry channelId;
+  // older cached songs don't, so fall back to a server lookup) and blacklist it.
+  const handleEmbedBlocked = async (song) => {
+    if (!song) return;
+    let channelId = song.channelId;
+    let channelTitle = song.channel;
+    if (!channelId && song.videoId) {
+      try {
+        const response = await fetch(`${API_BASE_URL}/channels/resolve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ videoId: song.videoId })
+        });
+        const data = await response.json();
+        if (data.success) {
+          channelId = data.channelId;
+          channelTitle = data.channelTitle;
+        }
+      } catch (error) {
+        console.error('Failed to resolve channel for blacklisting:', error);
+      }
+    }
+    if (channelId) {
+      blacklistChannel(channelId, channelTitle, 'Embedding disabled during playback');
+    } else {
+      pushToast(`"${song.title}" won't play, but its channel couldn't be identified to block it.`, 'warn');
+    }
+    playNextRef.current();
+  };
+
   // Search cached songs by query
   const searchCachedSongs = (query) => {
     return cachedSongs.filter(song => 
@@ -779,6 +887,8 @@ const KaraokeBarApp = () => {
     const newQueueItems = songOrders.map(songOrder => ({
       id: Date.now() + Math.random(), // Ensure unique ID
       videoId: songOrder.videoId,
+      channelId: songOrder.channelId,
+      channel: songOrder.channel,
       url: `https://www.youtube.com/watch?v=${songOrder.videoId}`,
       title: songOrder.item,
       thumbnail: songOrder.thumbnail,
@@ -828,13 +938,38 @@ const KaraokeBarApp = () => {
     pushToast('Check requested — your server will be right over.', 'success');
   };
   const reserveSong = (searchResult) => {
+    // Simple Queue Mode has no tables or billing — each device is its own
+    // guest, queueing straight from search, limited by their own live count.
+    if (simpleMode) {
+      const myQueuedCount = globalQueue.filter(s => s.guestId === guestId).length;
+      if (myQueuedCount >= maxSongsPerTable) {
+        pushToast(`You've reached the ${maxSongsPerTable}-song limit.`, 'warn');
+        return;
+      }
+      setGlobalQueue(prev => [...prev, {
+        id: Date.now() + Math.random(),
+        videoId: searchResult.videoId,
+        channelId: searchResult.channelId,
+        channel: searchResult.channel,
+        url: `https://www.youtube.com/watch?v=${searchResult.videoId}`,
+        title: searchResult.title,
+        thumbnail: searchResult.thumbnail,
+        guestId,
+        groupName: guestLabel,
+        addedAt: new Date().toLocaleTimeString()
+      }]);
+      addSongToCache(searchResult);
+      pushToast(`Added "${searchResult.title}" to the queue`, 'success');
+      return;
+    }
+
     const table = tables[currentTable];
-    
+
     // Check song limit (including pending songs)
     const confirmedSongs = table.songCount;
     const pendingSongs = (pendingOrders[currentTable] || []).filter(order => order.type === 'song').length;
     const totalSongs = confirmedSongs + pendingSongs;
-    
+
     if (totalSongs >= maxSongsPerTable) {
       pushToast(`Table ${currentTable} has reached the ${maxSongsPerTable}-song limit.`, 'warn');
       return;
@@ -849,6 +984,8 @@ const KaraokeBarApp = () => {
       tableNumber: currentTable,
       category: 'Song',
       videoId: searchResult.videoId,
+      channelId: searchResult.channelId,
+      channel: searchResult.channel,
       thumbnail: searchResult.thumbnail,
       availability: searchResult.availability,
       isBlocked: searchResult.isBlocked,
@@ -860,7 +997,7 @@ const KaraokeBarApp = () => {
       ...prev,
       [currentTable]: [...(prev[currentTable] || []), transaction]
     }));
-    
+
     // Add song to cache for offline search
     addSongToCache(searchResult);
     pushToast(`Reserved "${searchResult.title}"`, 'success');
@@ -870,12 +1007,34 @@ const KaraokeBarApp = () => {
   const playNext = () => {
     if (globalQueue.length > 0) {
       setCurrentSong(globalQueue[0]);
+      setCurrentSongStartedAt(Date.now());
       setIsPlaying(true);
       setGlobalQueue(prev => prev.slice(1));
     } else {
       setCurrentSong(null);
+      setCurrentSongStartedAt(null);
       setIsPlaying(false);
     }
+  };
+
+  // Table-side controls for the table whose song is currently playing.
+  const restartCurrentSong = () => setCurrentSongStartedAt(Date.now());
+
+  // Remove a table's own not-yet-played song from the shared queue.
+  const cancelQueuedSong = (song) => {
+    if (simpleMode) {
+      if (song.guestId !== guestId) return;
+      setGlobalQueue(prev => prev.filter(s => s.id !== song.id));
+      pushToast(`Removed "${song.title}" from the queue`, 'info');
+      return;
+    }
+    if (song.tableNumber !== currentTable) return;
+    setGlobalQueue(prev => prev.filter(s => s.id !== song.id));
+    setTables(prev => ({
+      ...prev,
+      [currentTable]: { ...prev[currentTable], songCount: Math.max(0, (prev[currentTable].songCount || 0) - 1) }
+    }));
+    pushToast(`Removed "${song.title}" from the queue`, 'info');
   };
   // Keep a stable ref so the player/keyboard effects always call the latest playNext
   playNextRef.current = playNext;
@@ -1226,6 +1385,12 @@ const KaraokeBarApp = () => {
   const tableUrl = (n) => {
     const base = lanHost ? `http://${lanHost}` : window.location.origin;
     return `${base}/?mode=table&table=${n}`;
+  };
+
+  // Simple Queue Mode deep link — no table to pin to, every scan is a new guest
+  const joinUrl = () => {
+    const base = lanHost ? `http://${lanHost}` : window.location.origin;
+    return `${base}/?mode=table`;
   };
 
   // Connection indicator shared across top bars
@@ -1580,32 +1745,44 @@ const KaraokeBarApp = () => {
             <p className="text-lg sm:text-xl muted mb-10">Karaoke, drinks &amp; good times.</p>
 
             <div className="panel p-8">
-              <h2 className="h-display text-2xl mb-1">Join your table</h2>
-              <p className="muted mb-6">Scan with your phone to sing from your seat — or tap Sit Down to use this device.</p>
-
-              <div className="qr-box mx-auto mb-2">
-                <QRCodeSVG value={tableUrl(currentTable)} size={208} bgColor="#ffffff" fgColor="#0a0e17" level="M" includeMargin />
-              </div>
-              <p className="label">Scan to join Table {currentTable}</p>
-              <p className="dim text-xs mb-6">This screen opens to your table automatically when someone scans.</p>
-
-              <div className="divide-line pt-6">
-                <div className="flex gap-2 justify-center flex-wrap items-center">
-                  <select
-                    className="select"
-                    style={{ width: 'auto' }}
-                    aria-label="Choose your table"
-                    value={currentTable}
-                    onChange={(e) => setCurrentTable(parseInt(e.target.value, 10))}
-                  >
-                    {tableList.map(t => <option key={t.number} value={t.number}>Table {t.number}</option>)}
-                  </select>
+              {simpleMode ? (
+                <>
+                  <h2 className="h-display text-2xl mb-1">Join the Queue</h2>
+                  <p className="muted mb-6">Scan the QR code on the TV screen to join from your phone — or tap below to use this device.</p>
                   <button className="btn btn-primary" onClick={() => assignRole('table')}>
-                    <Mic2 className="w-4 h-4" /> Sit Down
+                    <Mic2 className="w-4 h-4" /> Join the Queue
                   </button>
-                </div>
-                <p className="dim text-xs mt-4 break-all">{tableUrl(currentTable)}</p>
-              </div>
+                </>
+              ) : (
+                <>
+                  <h2 className="h-display text-2xl mb-1">Join your table</h2>
+                  <p className="muted mb-6">Scan with your phone to sing from your seat — or tap Sit Down to use this device.</p>
+
+                  <div className="qr-box mx-auto mb-2">
+                    <QRCodeSVG value={tableUrl(currentTable)} size={208} bgColor="#ffffff" fgColor="#0a0e17" level="M" includeMargin />
+                  </div>
+                  <p className="label">Scan to join Table {currentTable}</p>
+                  <p className="dim text-xs mb-6">This screen opens to your table automatically when someone scans.</p>
+
+                  <div className="divide-line pt-6">
+                    <div className="flex gap-2 justify-center flex-wrap items-center">
+                      <select
+                        className="select"
+                        style={{ width: 'auto' }}
+                        aria-label="Choose your table"
+                        value={currentTable}
+                        onChange={(e) => setCurrentTable(parseInt(e.target.value, 10))}
+                      >
+                        {tableList.map(t => <option key={t.number} value={t.number}>Table {t.number}</option>)}
+                      </select>
+                      <button className="btn btn-primary" onClick={() => assignRole('table')}>
+                        <Mic2 className="w-4 h-4" /> Sit Down
+                      </button>
+                    </div>
+                    <p className="dim text-xs mt-4 break-all">{tableUrl(currentTable)}</p>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -1616,8 +1793,10 @@ const KaraokeBarApp = () => {
   // TABLE MODE
   if (mode === 'table') {
     const table = tables[currentTable];
-    const groupName = table.groupName || `Table of ${table.guestCount}`;
-    
+    const groupName = simpleMode ? guestLabel : (table.groupName || `Table of ${table.guestCount}`);
+    const myQueuedCount = globalQueue.filter(s => s.guestId === guestId).length;
+    const atSongLimit = simpleMode ? myQueuedCount >= maxSongsPerTable : table.songCount >= maxSongsPerTable;
+
     const pendingTotal = (pendingOrders[currentTable] || []).reduce((sum, order) => sum + order.price, 0);
 
     return (
@@ -1635,23 +1814,27 @@ const KaraokeBarApp = () => {
             </div>
             <div className="flex items-center gap-3">
               {connDot}
-              {/* Table switcher only when unlocked (no staff PIN). With a PIN set,
-                  a guest device is kiosk-locked to its own table. */}
-              {!hasPin && (
-                <select
-                  aria-label="Table number"
-                  className="select"
-                  style={{ width: 'auto' }}
-                  value={currentTable}
-                  onChange={(e) => setCurrentTable(parseInt(e.target.value, 10))}
-                >
-                  {tableList.map(t => <option key={t.number} value={t.number}>Table {t.number}</option>)}
-                </select>
+              {!simpleMode && (
+                <>
+                  {/* Table switcher only when unlocked (no staff PIN). With a PIN set,
+                      a guest device is kiosk-locked to its own table. */}
+                  {!hasPin && (
+                    <select
+                      aria-label="Table number"
+                      className="select"
+                      style={{ width: 'auto' }}
+                      value={currentTable}
+                      onChange={(e) => setCurrentTable(parseInt(e.target.value, 10))}
+                    >
+                      {tableList.map(t => <option key={t.number} value={t.number}>Table {t.number}</option>)}
+                    </select>
+                  )}
+                  <span className="tag">Table {currentTable}</span>
+                  <button onClick={() => setQrTable(currentTable)} className="icon-btn" title="Invite — show table QR" aria-label="Show table QR code">
+                    <QrCode className="w-4 h-4" />
+                  </button>
+                </>
               )}
-              <span className="tag">Table {currentTable}</span>
-              <button onClick={() => setQrTable(currentTable)} className="icon-btn" title="Invite — show table QR" aria-label="Show table QR code">
-                <QrCode className="w-4 h-4" />
-              </button>
               <button onClick={() => requireStaff(() => setMode(null))} className="icon-btn" title="Staff — change device role" aria-label="Staff — change device role">
                 <Settings className="w-4 h-4" />
               </button>
@@ -1661,41 +1844,49 @@ const KaraokeBarApp = () => {
 
         <div className="cantina-shell fade-up">
           {/* Stats */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+          <div className={`grid ${simpleMode ? 'grid-cols-1 max-w-[12rem]' : 'grid-cols-2 sm:grid-cols-4'} gap-3 mb-6`}>
             <div className="stat">
-              <div className="stat-num" style={{ color: 'var(--brand)' }}>{table.songCount}/{maxSongsPerTable}</div>
-              <div className="stat-cap">Songs Reserved</div>
+              <div className="stat-num" style={{ color: 'var(--brand)' }}>{simpleMode ? myQueuedCount : table.songCount}/{maxSongsPerTable}</div>
+              <div className="stat-cap">{simpleMode ? 'Your Songs' : 'Songs Reserved'}</div>
             </div>
-            <div className="stat">
-              <div className="stat-num money">{currency}{table.totalSpent.toFixed(2)}</div>
-              <div className="stat-cap">Total Spent</div>
-            </div>
-            <div className="stat">
-              <div className="stat-num">{table.guestCount}</div>
-              <div className="stat-cap">Guests</div>
-            </div>
-            <button
-              onClick={requestCheck}
-              disabled={table.checkRequested}
-              className={`btn ${table.checkRequested ? 'btn-warn' : 'btn-success'}`}
-              style={{ height: '100%' }}
-            >
-              {table.checkRequested ? '✓ Check Requested' : '💳 Request Check'}
-            </button>
+            {!simpleMode && (
+              <div className="stat">
+                <div className="stat-num">{table.guestCount}</div>
+                <div className="stat-cap">Guests</div>
+              </div>
+            )}
+            {!simpleMode && (
+              <>
+                <div className="stat">
+                  <div className="stat-num money">{currency}{table.totalSpent.toFixed(2)}</div>
+                  <div className="stat-cap">Total Spent</div>
+                </div>
+                <button
+                  onClick={requestCheck}
+                  disabled={table.checkRequested}
+                  className={`btn ${table.checkRequested ? 'btn-warn' : 'btn-success'}`}
+                  style={{ height: '100%' }}
+                >
+                  {table.checkRequested ? '✓ Check Requested' : '💳 Request Check'}
+                </button>
+              </>
+            )}
           </div>
 
           {/* Page Navigation */}
-          <div className="seg mb-6">
-            <button onClick={() => setTablePage('karaoke')} className={`seg-btn ${tablePage === 'karaoke' ? 'is-active' : ''}`}>
-              🎤 Karaoke
-            </button>
-            <button onClick={() => setTablePage('menu')} className={`seg-btn ${tablePage === 'menu' ? 'is-active' : ''}`}>
-              🍽️ Menu
-            </button>
-          </div>
+          {!simpleMode && (
+            <div className="seg mb-6">
+              <button onClick={() => setTablePage('karaoke')} className={`seg-btn ${tablePage === 'karaoke' ? 'is-active' : ''}`}>
+                🎤 Karaoke
+              </button>
+              <button onClick={() => setTablePage('menu')} className={`seg-btn ${tablePage === 'menu' ? 'is-active' : ''}`}>
+                🍽️ Menu
+              </button>
+            </div>
+          )}
 
           {/* Ordering as — tags songs & orders to a guest for split billing */}
-          {(table.members || []).length > 0 && (
+          {!simpleMode && (table.members || []).length > 0 && (
             <div className="panel p-4 mb-6 flex items-center gap-3 flex-wrap">
               <Users className="w-4 h-4" style={{ color: 'var(--brand)' }} />
               <span className="label">Ordering as</span>
@@ -1765,7 +1956,7 @@ const KaraokeBarApp = () => {
                         {result.isBlocked && <p className="text-xs mt-1" style={{ color: 'var(--danger)' }}>Embedding disabled — can watch on YouTube</p>}
                       </div>
                       <div className="text-right flex-shrink-0">
-                        <div className="text-sm money mb-1">{currency}{songPrice.toFixed(2)}</div>
+                        {!simpleMode && <div className="text-sm money mb-1">{currency}{songPrice.toFixed(2)}</div>}
                         {result.isBlocked ? (
                           <div className="flex flex-col gap-1">
                             <button
@@ -1777,7 +1968,7 @@ const KaraokeBarApp = () => {
                             </button>
                             <button
                               onClick={() => reserveSong(result)}
-                              disabled={table.songCount >= maxSongsPerTable}
+                              disabled={atSongLimit}
                               className="btn btn-sm btn-ghost"
                               title="Reserve anyway (will need manual playback)"
                             >
@@ -1787,10 +1978,10 @@ const KaraokeBarApp = () => {
                         ) : (
                           <button
                             onClick={() => reserveSong(result)}
-                            disabled={table.songCount >= maxSongsPerTable}
+                            disabled={atSongLimit}
                             className="btn btn-sm btn-primary"
                           >
-                            {table.songCount >= maxSongsPerTable ? 'Limit Reached' : 'Reserve'}
+                            {atSongLimit ? 'Limit Reached' : 'Reserve'}
                           </button>
                         )}
                       </div>
@@ -1801,8 +1992,71 @@ const KaraokeBarApp = () => {
             </div>
           )}
 
+          {/* Queue — Simple Mode only. Every table sees what's playing and
+              what's up next, but can only touch its own songs. */}
+          {simpleMode && (
+            <div className="panel p-5 mb-6">
+              <h2 className="h-display text-lg mb-4 flex items-center gap-2">
+                <Music2 className="w-5 h-5" style={{ color: 'var(--brand)' }} />
+                Up Next{globalQueue.length > 0 && <span className="dim">({globalQueue.length})</span>}
+              </h2>
+
+              {currentSong && (
+                <div className="subpanel p-3 mb-3 flex items-center justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <Play className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--brand)' }} />
+                      <span className="label">Now Playing</span>
+                    </div>
+                    <p className="text-sm font-semibold truncate">{currentSong.title}</p>
+                    <p className="text-xs dim">{currentSong.groupName}</p>
+                  </div>
+                  {currentSong.guestId === guestId && (
+                    <div className="flex gap-2 flex-shrink-0">
+                      {currentSongStartedAt && nowTick - currentSongStartedAt < 15000 && (
+                        <button onClick={restartCurrentSong} className="btn btn-sm btn-ghost">
+                          <RefreshCw className="w-3.5 h-3.5" /> Start Over
+                        </button>
+                      )}
+                      <button onClick={playNext} className="btn btn-sm btn-warn">
+                        <SkipForward className="w-3.5 h-3.5" /> Skip
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {globalQueue.length === 0 ? (
+                <p className="dim text-sm">Nothing queued yet — search above to add a song.</p>
+              ) : (
+                <div className="space-y-2">
+                  {globalQueue.map((song, index) => (
+                    <div key={song.id} className="row flex items-center gap-3 p-3">
+                      <span className="dim text-xs w-4 flex-shrink-0">{index + 1}</span>
+                      <img src={song.thumbnail} alt={song.title} className="w-12 h-9 object-cover rounded flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold truncate">{song.title}</p>
+                        <p className="text-xs dim">{song.groupName}</p>
+                      </div>
+                      {song.guestId === guestId && (
+                        <button
+                          onClick={() => cancelQueuedSong(song)}
+                          className="icon-btn flex-shrink-0"
+                          title="Remove your song from the queue"
+                          aria-label="Remove your song from the queue"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Menu Page */}
-          {tablePage === 'menu' && (
+          {!simpleMode && tablePage === 'menu' && (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
               {/* Drinks */}
               <div className="panel p-5">
@@ -1855,7 +2109,7 @@ const KaraokeBarApp = () => {
           )}
 
           {/* Pending Orders */}
-          {(pendingOrders[currentTable]?.length || 0) > 0 && (
+          {!simpleMode && (pendingOrders[currentTable]?.length || 0) > 0 && (
             <div className="panel p-5 mb-6" style={{ borderColor: 'var(--warn-border)' }}>
               <div className="flex justify-between items-center mb-4 flex-wrap gap-3">
                 <h2 className="h-display text-lg" style={{ color: 'var(--warn)' }}>Pending Orders</h2>
@@ -1888,39 +2142,41 @@ const KaraokeBarApp = () => {
           )}
 
           {/* Confirmed Orders */}
-          <div className="panel p-5">
-            <h2 className="h-display text-lg mb-4">Confirmed Orders</h2>
-            {table.orders.length === 0 && (pendingOrders[currentTable]?.length || 0) === 0 ? (
-              <div className="text-center py-10 dim">
-                <div className="text-4xl mb-2">📝</div>
-                <p className="font-medium">No orders yet</p>
-                <p className="text-sm">Search for songs or browse the menu</p>
-              </div>
-            ) : table.orders.length === 0 ? (
-              <div className="text-center py-6 dim">
-                <p className="font-medium">No confirmed orders yet</p>
-                <p className="text-sm">Confirm your pending orders above</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {table.orders.map((order) => (
-                  <div key={order.id} className="row flex items-center justify-between p-3">
-                    <div>
-                      <h4 className="font-semibold">{order.item}</h4>
-                      <p className="text-xs dim">{order.type === 'song' ? '🎤' : '🍽️'} {order.category || 'Song'} · {new Date(order.timestamp).toLocaleTimeString()}</p>
+          {!simpleMode && (
+            <div className="panel p-5">
+              <h2 className="h-display text-lg mb-4">Confirmed Orders</h2>
+              {table.orders.length === 0 && (pendingOrders[currentTable]?.length || 0) === 0 ? (
+                <div className="text-center py-10 dim">
+                  <div className="text-4xl mb-2">📝</div>
+                  <p className="font-medium">No orders yet</p>
+                  <p className="text-sm">Search for songs or browse the menu</p>
+                </div>
+              ) : table.orders.length === 0 ? (
+                <div className="text-center py-6 dim">
+                  <p className="font-medium">No confirmed orders yet</p>
+                  <p className="text-sm">Confirm your pending orders above</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {table.orders.map((order) => (
+                    <div key={order.id} className="row flex items-center justify-between p-3">
+                      <div>
+                        <h4 className="font-semibold">{order.item}</h4>
+                        <p className="text-xs dim">{order.type === 'song' ? '🎤' : '🍽️'} {order.category || 'Song'} · {new Date(order.timestamp).toLocaleTimeString()}</p>
+                      </div>
+                      <div className="money">{currency}{order.price.toFixed(2)}</div>
                     </div>
-                    <div className="money">{currency}{order.price.toFixed(2)}</div>
-                  </div>
-                ))}
-                <div className="divide-line pt-3 mt-3">
-                  <div className="flex justify-between items-center font-bold">
-                    <span>Confirmed Total</span>
-                    <span className="money">{currency}{table.totalSpent.toFixed(2)}</span>
+                  ))}
+                  <div className="divide-line pt-3 mt-3">
+                    <div className="flex justify-between items-center font-bold">
+                      <span>Confirmed Total</span>
+                      <span className="money">{currency}{table.totalSpent.toFixed(2)}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -2044,6 +2300,20 @@ const KaraokeBarApp = () => {
             <div className="label">Now Singing</div>
           </div>
         )}
+
+        {/* Simple Queue Mode: no tables to walk up to, so the join link lives
+            here — scan to queue a song from your own phone. */}
+        {simpleMode && (
+          <div className="absolute bottom-5 right-5 panel p-3 flex items-center gap-3">
+            <div className="qr-box" style={{ padding: '0.4rem' }}>
+              <QRCodeSVG value={joinUrl()} size={88} bgColor="#ffffff" fgColor="#0a0e17" level="M" includeMargin={false} />
+            </div>
+            <div className="leading-tight">
+              <div className="label">Scan to Join</div>
+              <div className="text-sm font-semibold">Queue a song</div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -2104,13 +2374,15 @@ const KaraokeBarApp = () => {
 
     const barTabs = [
       { id: 'queue', label: '🎤 Queue' },
-      { id: 'orders', label: '📋 Orders' },
-      { id: 'guests', label: '👥 Guests' },
-      { id: 'floor', label: '🗺️ Floor' },
-      { id: 'tables', label: '🪑 Tables' },
-      { id: 'menu', label: '🍽️ Menu' },
-      { id: 'history', label: '📅 History' },
-      { id: 'tabs', label: '💳 Tabs' },
+      ...(simpleMode ? [] : [
+        { id: 'orders', label: '📋 Orders' },
+        { id: 'guests', label: '👥 Guests' },
+        { id: 'floor', label: '🗺️ Floor' },
+        { id: 'tables', label: '🪑 Tables' },
+        { id: 'menu', label: '🍽️ Menu' },
+        { id: 'history', label: '📅 History' },
+        { id: 'tabs', label: '💳 Tabs' }
+      ]),
       { id: 'settings', label: '⚙️ Settings' }
     ];
 
@@ -2561,7 +2833,7 @@ const KaraokeBarApp = () => {
                           <p className="text-xs dim">{song.groupName} · Table {song.tableNumber} · {song.addedAt}</p>
                           {song.isBlocked && <p className="text-xs" style={{ color: 'var(--danger)' }}>Will need manual YouTube playback</p>}
                         </div>
-                        <div className="money text-sm">{currency}{song.price.toFixed(2)}</div>
+                        {!simpleMode && <div className="money text-sm">{currency}{(song.price || 0).toFixed(2)}</div>}
                         <div className="flex items-center gap-1">
                           {song.isBlocked && (
                             <button
@@ -3115,6 +3387,64 @@ const KaraokeBarApp = () => {
                     </button>
                   )}
                 </div>
+              </div>
+
+              {/* Simple Queue Mode */}
+              <div className="panel p-5">
+                <div className="flex items-center gap-2 mb-1">
+                  <Mic2 className="w-5 h-5" style={{ color: 'var(--brand)' }} />
+                  <h4 className="h-display text-lg">Simple Queue Mode</h4>
+                  <span className={`tag ${simpleMode ? 'tag-ok' : ''}`}>{simpleMode ? 'On' : 'Off'}</span>
+                </div>
+                <p className="text-sm dim mb-4">
+                  Strips this down to just the karaoke queue — no tables, no ordering, no billing. Each device that joins is its own guest, singing straight from search. Guests scan the QR code on the TV to join. Hides Orders, Guests, Floor, Tables, Menu, History and Tabs from the Bar Console.
+                </p>
+                <button
+                  className={`btn ${simpleMode ? 'btn-danger' : 'btn-primary'}`}
+                  onClick={() => {
+                    if (simpleMode) { setSimpleMode(false); pushToast('Simple Queue Mode off — bar features restored', 'info'); return; }
+                    askConfirm({
+                      title: 'Turn on Simple Queue Mode?',
+                      body: 'Ordering, billing, tables, floor plan and history become unavailable on every device until this is turned back off.',
+                      confirmLabel: 'Turn on',
+                      onConfirm: () => { setSimpleMode(true); setBarPage('queue'); pushToast('Simple Queue Mode on — bar features hidden', 'success'); }
+                    });
+                  }}
+                >
+                  {simpleMode ? 'Turn off' : 'Turn on'}
+                </button>
+              </div>
+
+              {/* Blacklisted Channels */}
+              <div className="panel p-5">
+                <div className="flex items-center gap-2 mb-1">
+                  <AlertTriangle className="w-5 h-5" style={{ color: 'var(--brand)' }} />
+                  <h4 className="h-display text-lg">Blacklisted Channels</h4>
+                  <span className="tag">{blacklistedChannels.length}</span>
+                </div>
+                <p className="text-sm dim mb-4">
+                  Channels that disable embedded playback get added here automatically when a song from them fails on the TV. Their videos are filtered out of search and purged from the queue/cache.
+                </p>
+                {blacklistedChannels.length === 0 ? (
+                  <p className="dim text-sm">No channels blocked yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {blacklistedChannels.map(c => (
+                      <div key={c.channelId} className="subpanel p-3 flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-semibold text-sm">{c.channelTitle}</div>
+                          <div className="dim text-xs">{c.reason} · {new Date(c.blacklistedAt).toLocaleDateString()}</div>
+                        </div>
+                        <button
+                          className="btn btn-sm btn-ghost"
+                          onClick={() => setBlacklistedChannels(prev => prev.filter(x => x.channelId !== c.channelId))}
+                        >
+                          Unblock
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

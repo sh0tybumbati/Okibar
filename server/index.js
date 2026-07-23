@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const { searchKaraokeVideos, testApiKey, checkVideoAvailability, batchCheckAvailability } = require('./youtubeApi');
+const { searchKaraokeVideos, testApiKey, checkVideoAvailability, batchCheckAvailability, getVideoChannel } = require('./youtubeApi');
 
 const app = express();
 const server = http.createServer(app);
@@ -67,16 +67,20 @@ app.get('/api/search', async (req, res) => {
     try {
       const results = await searchKaraokeVideos(q);
 
-      // Enhance results with availability status from cache
+      // Enhance results with availability status from cache, and drop any
+      // video from a channel that's been blacklisted for disabling embedding.
       const cachedSongs = getCachedSongs();
-      const enhancedResults = results.map(song => {
-        const cachedSong = cachedSongs.find(cached => cached.videoId === song.videoId);
-        return {
-          ...song,
-          availability: cachedSong?.availability || null,
-          isBlocked: cachedSong?.availability?.playable === false
-        };
-      });
+      const blacklistedChannelIds = new Set((sharedState.blacklistedChannels || []).map(c => c.channelId));
+      const enhancedResults = results
+        .filter(song => !blacklistedChannelIds.has(song.channelId))
+        .map(song => {
+          const cachedSong = cachedSongs.find(cached => cached.videoId === song.videoId);
+          return {
+            ...song,
+            availability: cachedSong?.availability || null,
+            isBlocked: cachedSong?.availability?.playable === false
+          };
+        });
 
       console.log('✅ YouTube API success, returning', enhancedResults.length, 'results');
       res.json(enhancedResults);
@@ -222,6 +226,21 @@ app.post('/api/cached-songs/batch-recheck', async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, message: 'Batch recheck failed' });
   }
+});
+
+// --- CHANNEL BLACKLIST ---
+// Songs that predate channelId tracking on search results don't carry it, so
+// let the client ask the server to resolve a video's channel before blacklisting.
+app.post('/api/channels/resolve', async (req, res) => {
+  const { videoId } = req.body;
+  if (!videoId) {
+    return res.status(400).json({ success: false, message: 'videoId is required' });
+  }
+  const info = await getVideoChannel(videoId);
+  if (!info || !info.channelId) {
+    return res.status(404).json({ success: false, message: 'Could not resolve channel for video' });
+  }
+  res.json({ success: true, ...info });
 });
 
 // --- SOCKET SYNC ---
