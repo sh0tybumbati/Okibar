@@ -7,6 +7,7 @@ const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+const VIDEO_ID_REGEX = /^[a-zA-Z0-9_-]{11}$/;
 const MEDIA_DIR = process.env.CANTINA_MEDIA_DIR || path.join(__dirname, 'media');
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
@@ -15,6 +16,7 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 const isPartialFile = (name) => /\.(part|ytdl|part-Frag\d+)$/i.test(name);
 
 const findArchivedFile = (videoId) => {
+  if (!VIDEO_ID_REGEX.test(videoId)) return null;
   const prefix = `${videoId}.`;
   const match = fs.readdirSync(MEDIA_DIR).find(f => f.startsWith(prefix) && !isPartialFile(f));
   return match || null;
@@ -82,6 +84,9 @@ const releaseDownloadSlot = () => {
 // screen, keeps downloads fast and storage reasonable for a bar running
 // this over weeks/months.
 const archiveVideo = (videoId, { onProgress } = {}) => {
+  if (!VIDEO_ID_REGEX.test(videoId)) {
+    return Promise.reject(new Error(`Invalid video ID: ${videoId}`));
+  }
   const existing = findArchivedFile(videoId);
   if (existing) return Promise.resolve({ success: true, file: existing });
   if (inFlight.has(videoId)) return inFlight.get(videoId);
@@ -140,4 +145,39 @@ const archiveVideo = (videoId, { onProgress } = {}) => {
   return promise;
 };
 
-module.exports = { archiveVideo, isArchived, findArchivedFile, checkYtDlpAvailable, MEDIA_DIR };
+// Enforce a maximum media directory size by evicting least-recently-accessed
+// files first. Called on startup and after each successful download.
+const DEFAULT_MAX_MEDIA_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+
+const enforceMediaQuota = async (maxBytes) => {
+  maxBytes = maxBytes || (parseFloat(process.env.CANTINA_MAX_MEDIA_GB) || 5) * 1024 * 1024 * 1024;
+  try {
+    const files = await fs.promises.readdir(MEDIA_DIR);
+    const stats = await Promise.all(
+      files
+        .filter(f => !isPartialFile(f))
+        .map(async (f) => {
+          const filePath = path.join(MEDIA_DIR, f);
+          const stat = await fs.promises.stat(filePath);
+          return { name: f, path: filePath, size: stat.size, atimeMs: stat.atimeMs };
+        })
+    );
+    // Sort by access time, oldest first
+    stats.sort((a, b) => a.atimeMs - b.atimeMs);
+    let totalSize = stats.reduce((sum, s) => sum + s.size, 0);
+    let evicted = 0;
+    while (totalSize > maxBytes && stats.length > 0) {
+      const oldest = stats.shift();
+      await fs.promises.unlink(oldest.path);
+      totalSize -= oldest.size;
+      evicted++;
+    }
+    if (evicted > 0) {
+      console.log(`🧹 Media quota: evicted ${evicted} file(s), ${(totalSize / 1024 / 1024).toFixed(0)} MB remaining`);
+    }
+  } catch (err) {
+    console.error('Failed to enforce media quota:', err.message);
+  }
+};
+
+module.exports = { archiveVideo, isArchived, findArchivedFile, checkYtDlpAvailable, enforceMediaQuota, VIDEO_ID_REGEX, MEDIA_DIR };

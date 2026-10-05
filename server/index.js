@@ -7,7 +7,7 @@ const os = require('os');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const { searchKaraokeVideos, testApiKey, checkVideoAvailability, batchCheckAvailability } = require('./youtubeApi');
-const { archiveVideo, findArchivedFile, checkYtDlpAvailable, MEDIA_DIR } = require('./archiver');
+const { archiveVideo, findArchivedFile, checkYtDlpAvailable, enforceMediaQuota, VIDEO_ID_REGEX, MEDIA_DIR } = require('./archiver');
 
 const app = express();
 const server = http.createServer(app);
@@ -36,15 +36,26 @@ try {
   sharedState = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
   console.log('💾 Restored venue state from', STATE_FILE);
 } catch (err) {
-  // No saved state yet - start fresh
+  // state.json missing or corrupt — try the backup
+  const backupFile = STATE_FILE + '.bak';
+  try {
+    sharedState = JSON.parse(fs.readFileSync(backupFile, 'utf8'));
+    console.log('💾 Restored venue state from backup', backupFile);
+  } catch (_) {
+    console.log('🆕 No saved state found — starting fresh');
+  }
 }
 
 let saveTimer = null;
 const scheduleSave = () => {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    fs.writeFile(STATE_FILE, JSON.stringify(sharedState), (err) => {
-      if (err) console.error('Failed to persist state:', err.message);
+    const tmpFile = STATE_FILE + '.tmp';
+    fs.writeFile(tmpFile, JSON.stringify(sharedState, null, 2), (err) => {
+      if (err) return console.error('Failed to write temp state:', err.message);
+      fs.rename(tmpFile, STATE_FILE, (renameErr) => {
+        if (renameErr) console.error('Failed to rename state file:', renameErr.message);
+      });
     });
   }, 1000);
 };
@@ -56,235 +67,32 @@ const setCachedSongs = (songs) => {
   scheduleSave();
 };
 
-// --- YOUTUBE SEARCH ---
-app.get('/api/search', async (req, res) => {
-  try {
-    const { q } = req.query;
-    if (!q) {
-      return res.status(400).json({ error: 'Search query is required' });
-    }
+// --- REST API ROUTES ---
+app.use('/api', require('./routes/search')({ getCachedSongs, setCachedSongs }));
+app.use('/api', require('./routes/cachedSongs')({ getCachedSongs, setCachedSongs }));
+app.use('/api', require('./routes/archive')({ getCachedSongs, setCachedSongs }));
 
-    console.log('🔍 Search request:', q);
-
-    try {
-      const results = await searchKaraokeVideos(q);
-
-      // Enhance results with availability + archive status from cache.
-      const cachedSongs = getCachedSongs();
-      const enhancedResults = results.map(song => {
-        const cachedSong = cachedSongs.find(cached => cached.videoId === song.videoId);
-        return {
-          ...song,
-          availability: cachedSong?.availability || null,
-          isBlocked: cachedSong?.availability?.playable === false,
-          archive: cachedSong?.archive || null
-        };
-      });
-
-      console.log('✅ YouTube API success, returning', enhancedResults.length, 'results');
-      res.json(enhancedResults);
-      return;
-    } catch (youtubeError) {
-      console.error('❌ YouTube API failed:', youtubeError.message);
-
-      let errorMessage = 'YouTube search temporarily unavailable';
-      if (youtubeError.message === 'YOUTUBE_API_KEY_MISSING') {
-        errorMessage = 'YouTube API key not configured';
-      } else if (youtubeError.message === 'YOUTUBE_API_QUOTA_EXCEEDED') {
-        errorMessage = 'YouTube API quota exceeded. Try again later.';
-      } else if (youtubeError.message === 'YOUTUBE_API_INVALID_KEY') {
-        errorMessage = 'YouTube API key is invalid';
-      }
-
-      // Fallback to cached search
-      const filtered = getCachedSongs().filter(song => {
-        return song.title.toLowerCase().includes(q.toLowerCase()) ||
-               (song.channel || '').toLowerCase().includes(q.toLowerCase());
-      }).slice(0, 10).map(song => ({
-        ...song,
-        isBlocked: song.availability?.playable === false
-      }));
-
-      if (filtered.length > 0) {
-        console.log('🔄 Returning', filtered.length, 'cached results as fallback');
-        res.json({
-          results: filtered,
-          fallback: true,
-          message: `${errorMessage}. Showing cached results.`
-        });
-      } else {
-        res.json({
-          results: [],
-          fallback: true,
-          message: `${errorMessage}. No cached matches found.`
-        });
-      }
-    }
-  } catch (error) {
-    console.error('💥 Search endpoint error:', error);
-    res.status(500).json({
-      error: 'Search failed',
-      message: 'Internal server error. Check server logs.'
-    });
-  }
-});
-
-// --- CACHED SONGS ---
-app.get('/api/cached-songs', (req, res) => {
-  res.json(getCachedSongs());
-});
-
-app.get('/api/search-cached', (req, res) => {
-  const { q } = req.query;
-  if (!q) {
-    return res.json([]);
-  }
-
-  const filtered = getCachedSongs().filter(song => {
-    return song.title.toLowerCase().includes(q.toLowerCase()) ||
-           (song.channel || '').toLowerCase().includes(q.toLowerCase());
-  }).slice(0, 10).map(song => ({
-    ...song,
-    isBlocked: song.availability?.playable === false
-  }));
-
-  res.json(filtered);
-});
-
-app.delete('/api/cached-songs/:videoId', (req, res) => {
-  const { videoId } = req.params;
-  const cachedSongs = getCachedSongs();
-  const remaining = cachedSongs.filter(song => song.videoId !== videoId);
-
-  if (remaining.length < cachedSongs.length) {
-    setCachedSongs(remaining);
-    res.json({ success: true, message: 'Song removed from cache' });
-  } else {
-    res.status(404).json({ success: false, message: 'Song not found in cache' });
-  }
-});
-
-app.delete('/api/cached-songs', (req, res) => {
-  const { blocked } = req.query;
-  const cachedSongs = getCachedSongs();
-
-  const remaining = blocked === 'true'
-    ? cachedSongs.filter(song => !song.availability || song.availability.playable !== false)
-    : [];
-
-  setCachedSongs(remaining);
-  res.json({
-    success: true,
-    cleared: cachedSongs.length - remaining.length,
-    message: blocked === 'true' ? 'Blocked songs cleared' : 'All cached songs cleared'
-  });
-});
-
-app.post('/api/cached-songs/:videoId/recheck', async (req, res) => {
-  const { videoId } = req.params;
-  const cachedSongs = getCachedSongs();
-  const songIndex = cachedSongs.findIndex(song => song.videoId === videoId);
-
-  if (songIndex === -1) {
-    return res.status(404).json({ success: false, message: 'Song not found in cache' });
-  }
-
-  try {
-    const availability = await checkVideoAvailability(videoId);
-    const updated = cachedSongs.map(song =>
-      song.videoId === videoId ? { ...song, availability } : song
-    );
-    setCachedSongs(updated);
-    res.json({ success: true, availability });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to recheck availability' });
-  }
-});
-
-app.post('/api/cached-songs/batch-recheck', async (req, res) => {
-  const { videoIds } = req.body;
-
-  if (!videoIds || !Array.isArray(videoIds)) {
-    return res.status(400).json({ success: false, message: 'videoIds array is required' });
-  }
-
-  try {
-    const results = await batchCheckAvailability(videoIds);
-
-    let updatedCount = 0;
-    const updated = getCachedSongs().map(song => {
-      const availability = results[song.videoId];
-      if (availability) {
-        updatedCount++;
-        return { ...song, availability };
-      }
-      return song;
-    });
-    setCachedSongs(updated);
-    res.json({ success: true, updatedCount, results });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Batch recheck failed' });
-  }
-});
-
-// --- LOCAL ARCHIVE (fallback for videos that fail to embed) ---
-// Patches just the `archive` field of a cached song and broadcasts it.
-const setArchiveStatus = (videoId, patch) => {
-  const cachedSongs = getCachedSongs();
-  const idx = cachedSongs.findIndex(s => s.videoId === videoId);
-  if (idx === -1) return;
-  const updated = [...cachedSongs];
-  updated[idx] = { ...updated[idx], archive: { ...updated[idx].archive, ...patch } };
-  setCachedSongs(updated);
+// --- STAFF AUTH ---
+// Keys that require staff PIN to modify
+const crypto = require('crypto');
+const PIN_SALT = 'okibar::pin::v1';
+const hashPin = (pin) => {
+  // Mirror the frontend's synchronous SHA-256 hash with the same salt.
+  // The stored staffPin in sharedState is already a 64-char hex hash.
+  return crypto.createHash('sha256').update(`${PIN_SALT}${pin}`).digest('hex');
 };
 
-app.post('/api/archive', async (req, res) => {
-  const { videoId, title, thumbnail, channel } = req.body;
-  if (!videoId) {
-    return res.status(400).json({ success: false, message: 'videoId is required' });
-  }
+const PROTECTED_KEYS = new Set([
+  'staffPin', 'tables', 'tableList', 'menuItems', 'theme', 'simpleMode',
+  'cachedSongs', 'venueName', 'tvLayoutMode', 'songPrice', 'maxSongsPerTable',
+  'currency', 'qrPosition', 'guestsCanReorder'
+]);
 
-  const existingFile = findArchivedFile(videoId);
-  if (existingFile) {
-    return res.json({ success: true, archive: { status: 'ready', progress: 100, file: existingFile } });
-  }
-
-  const cachedSongs = getCachedSongs();
-  let song = cachedSongs.find(s => s.videoId === videoId);
-  if (!song) {
-    song = { videoId, title: title || 'Unknown', thumbnail: thumbnail || '', channel: channel || '' };
-    setCachedSongs([song, ...cachedSongs].slice(0, 100));
-  }
-  if (song.archive && song.archive.status === 'downloading') {
-    return res.json({ success: true, archive: song.archive });
-  }
-
-  const available = await checkYtDlpAvailable();
-  if (!available) {
-    setArchiveStatus(videoId, { status: 'failed', progress: 0, reason: 'yt-dlp is not installed on this machine' });
-    return res.status(503).json({ success: false, message: 'yt-dlp is not installed on this machine' });
-  }
-
-  setArchiveStatus(videoId, { status: 'downloading', progress: 0, reason: null });
-  res.json({ success: true, archive: { status: 'downloading', progress: 0 } });
-
-  // Downloading can take a while — respond immediately above, then stream
-  // progress and the final result over the existing state:update socket.
-  let lastBroadcast = 0;
-  archiveVideo(videoId, {
-    onProgress: (progress) => {
-      if (progress - lastBroadcast < 10 && progress < 99) return;
-      lastBroadcast = progress;
-      setArchiveStatus(videoId, { status: 'downloading', progress });
-    }
-  }).then((result) => {
-    if (result.success) {
-      setArchiveStatus(videoId, { status: 'ready', progress: 100, file: result.file, reason: null });
-    } else {
-      setArchiveStatus(videoId, { status: 'failed', progress: 0, reason: result.reason });
-    }
-  });
-});
+const ALLOWED_KEYS = new Set([
+  'globalQueue', 'currentSong', 'isPlaying', 'pendingOrders',
+  'groupHistory', 'currentSongStartedAt',
+  ...PROTECTED_KEYS
+]);
 
 // --- SOCKET SYNC ---
 io.on('connection', (socket) => {
@@ -296,8 +104,118 @@ io.on('connection', (socket) => {
   // Relay state changes to every other connected device
   socket.on('state:update', (update) => {
     if (!update || typeof update.key !== 'string') return;
+    if (!ALLOWED_KEYS.has(update.key)) return; // reject unknown keys
+
+    if (PROTECTED_KEYS.has(update.key)) {
+      // Staff PIN required for protected keys
+      const storedPin = sharedState.staffPin;
+      if (storedPin && typeof storedPin === 'string' && storedPin.length === 64) {
+        // PIN is set — verify the provided pin matches
+        if (!update.pin || hashPin(update.pin) !== storedPin) {
+          socket.emit('state:error', { key: update.key, error: 'Unauthorized: staff PIN required' });
+          return;
+        }
+      }
+      // If no PIN is set yet (empty or not a hash), allow the update
+      // (this handles initial setup where staffPin hasn't been configured)
+    }
+
     sharedState[update.key] = update.value;
     socket.broadcast.emit('state:update', { key: update.key, value: update.value });
+    scheduleSave();
+  });
+
+  // --- ACTION-BASED MUTATIONS ---
+  // These apply mutations atomically on the server to prevent race conditions
+  // when multiple clients modify the same state concurrently.
+
+  socket.on('queue:add', ({ song, pin }) => {
+    if (!song || !song.videoId) return;
+    const entry = {
+      ...song,
+      id: song.id || (Date.now() + Math.random()),
+      addedAt: song.addedAt || new Date().toLocaleTimeString()
+    };
+    if (!sharedState.globalQueue) sharedState.globalQueue = [];
+    sharedState.globalQueue.push(entry);
+    io.emit('state:update', { key: 'globalQueue', value: sharedState.globalQueue });
+    scheduleSave();
+  });
+
+  socket.on('queue:remove', ({ songId, pin }) => {
+    if (!sharedState.globalQueue) return;
+    sharedState.globalQueue = sharedState.globalQueue.filter(s => s.id !== songId);
+    io.emit('state:update', { key: 'globalQueue', value: sharedState.globalQueue });
+    scheduleSave();
+  });
+
+  socket.on('queue:reorder', ({ fromIndex, toIndex, pin }) => {
+    if (!sharedState.globalQueue) return;
+    if (fromIndex == null || toIndex == null) return;
+    const queue = [...sharedState.globalQueue];
+    if (fromIndex < 0 || fromIndex >= queue.length) return;
+    const clampedTo = Math.max(0, Math.min(toIndex, queue.length - 1));
+    const [moved] = queue.splice(fromIndex, 1);
+    queue.splice(clampedTo, 0, moved);
+    sharedState.globalQueue = queue;
+    io.emit('state:update', { key: 'globalQueue', value: sharedState.globalQueue });
+    scheduleSave();
+  });
+
+  socket.on('queue:clear', ({ pin }) => {
+    // Protected action — require staff PIN
+    const storedPin = sharedState.staffPin;
+    if (storedPin && typeof storedPin === 'string' && storedPin.length === 64) {
+      if (!pin || hashPin(pin) !== storedPin) {
+        socket.emit('state:error', { key: 'globalQueue', error: 'Unauthorized' });
+        return;
+      }
+    }
+    sharedState.globalQueue = [];
+    io.emit('state:update', { key: 'globalQueue', value: [] });
+    scheduleSave();
+  });
+
+  socket.on('queue:playNext', ({ pin }) => {
+    if (!sharedState.globalQueue) sharedState.globalQueue = [];
+    if (sharedState.globalQueue.length > 0) {
+      const next = sharedState.globalQueue.shift();
+      sharedState.currentSong = next;
+      sharedState.currentSongStartedAt = Date.now();
+      sharedState.isPlaying = true;
+    } else {
+      sharedState.currentSong = null;
+      sharedState.currentSongStartedAt = null;
+      sharedState.isPlaying = false;
+    }
+    io.emit('state:update', { key: 'globalQueue', value: sharedState.globalQueue });
+    io.emit('state:update', { key: 'currentSong', value: sharedState.currentSong });
+    io.emit('state:update', { key: 'currentSongStartedAt', value: sharedState.currentSongStartedAt });
+    io.emit('state:update', { key: 'isPlaying', value: sharedState.isPlaying });
+    scheduleSave();
+  });
+
+  socket.on('order:submit', ({ tableNumber, orders }) => {
+    if (tableNumber == null || !Array.isArray(orders)) return;
+    if (!sharedState.pendingOrders) sharedState.pendingOrders = {};
+    if (!sharedState.pendingOrders[tableNumber]) sharedState.pendingOrders[tableNumber] = [];
+    sharedState.pendingOrders[tableNumber].push(...orders);
+    io.emit('state:update', { key: 'pendingOrders', value: sharedState.pendingOrders });
+    scheduleSave();
+  });
+
+  socket.on('order:cancel', ({ tableNumber, orderId }) => {
+    if (tableNumber == null || !sharedState.pendingOrders?.[tableNumber]) return;
+    sharedState.pendingOrders[tableNumber] = sharedState.pendingOrders[tableNumber].filter(o => o.id !== orderId);
+    io.emit('state:update', { key: 'pendingOrders', value: sharedState.pendingOrders });
+    scheduleSave();
+  });
+
+  socket.on('order:clear', ({ tableNumber }) => {
+    if (tableNumber == null) return;
+    if (!sharedState.pendingOrders) sharedState.pendingOrders = {};
+    sharedState.pendingOrders[tableNumber] = [];
+    io.emit('state:update', { key: 'pendingOrders', value: sharedState.pendingOrders });
     scheduleSave();
   });
 
@@ -316,9 +234,12 @@ io.on('connection', (socket) => {
 // --- LAN HOST (for guest QR codes) ---
 // The desktop window loads the console from localhost, but phones must reach
 // this machine by its LAN IP. Resolve the first non-internal IPv4 address.
+const VIRTUAL_ADAPTER_PREFIXES = ['docker', 'br-', 'veth', 'tun', 'vmnet', 'virbr', 'vboxnet'];
+
 function getLanIp() {
   const ifaces = os.networkInterfaces();
   for (const name of Object.keys(ifaces)) {
+    if (VIRTUAL_ADAPTER_PREFIXES.some(p => name.startsWith(p))) continue;
     for (const iface of ifaces[name] || []) {
       if (iface.family === 'IPv4' && !iface.internal) return iface.address;
     }
@@ -346,4 +267,7 @@ server.listen(PORT, '0.0.0.0', async () => {
   } else {
     console.log('⚠️  YouTube API not available - using cached fallback mode');
   }
+
+  // Enforce media storage quota on startup
+  enforceMediaQuota().catch(err => console.error('Media quota check failed:', err.message));
 });
