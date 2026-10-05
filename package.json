@@ -36,11 +36,13 @@
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "tailwindcss": "^3.4.17",
-    "youtube-search": "^1.1.6"
+    "youtube-search": "^1.1.6",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
-    "@types/react": "^18.2.37",
-    "@types/react-dom": "^18.2.15",
+    "@types/node": "^26.4.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "concurrently": "^8.2.2",
     "electron": "^31.7.7",
     "electron-builder": "^24.13.3",
@@ -63,7 +65,9 @@
     "extends": null,
     "appId": "com.cantina.app",
     "productName": "Cantina",
-    "directories": { "buildResources": "build-assets" },
+    "directories": {
+      "buildResources": "build-assets"
+    },
     "files": [
       "build/**/*",
       "server/**/*",
@@ -73,16 +77,25 @@
       "!server/state.json"
     ],
     "extraResources": [
-      { "from": ".env", "to": ".env" }
+      {
+        "from": ".env",
+        "to": ".env"
+      }
     ],
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "AudioVideo",
       "maintainer": "Cantina <noreply@cantina.app>",
       "icon": "build-assets/icon.png"
     },
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "icon": "build-assets/icon.ico"
     }
   }

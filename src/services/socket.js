@@ -11,4 +11,5 @@ const SERVER_URL =
 
 const socket = io(SERVER_URL);
 
+export { socket };
 export default socket;
