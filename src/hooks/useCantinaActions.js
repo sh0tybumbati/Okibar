@@ -4,6 +4,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import apiService, { API_BASE_URL, SERVER_ORIGIN } from '../services/api';
 import socket from '../services/socket';
 import { hashPin, isHashedPin } from '../utils/hash';
+import { guestBase } from '../utils/guestUrl';
 import { useAppStore } from '../store/appStore';
 import { useUIStore } from '../store/uiStore';
 
@@ -1292,14 +1293,12 @@ export const useCantinaActions = () => {
 
   // Deep link that opens (or syncs) a device straight into a given table
   const tableUrl = (n) => {
-    const base = lanHost ? `http://${lanHost}` : window.location.origin;
-    return `${base}/?mode=table&table=${n}`;
+    return `${guestBase(lanHost, window.location)}/?mode=table&table=${n}`;
   };
 
   // Simple Queue Mode deep link — no table to pin to, every scan is a new guest
   const joinUrl = () => {
-    const base = lanHost ? `http://${lanHost}` : window.location.origin;
-    return `${base}/?mode=table`;
+    return `${guestBase(lanHost, window.location)}/?mode=table`;
   };
 
   // Connection indicator shared across top bars
